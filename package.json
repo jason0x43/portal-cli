@@ -1,0 +1,22 @@
+{
+  "name": "portal-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "portal": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --minify src/cli.ts --outfile dist/portal",
+    "build:linux": "bun build --compile --minify --target=bun-linux-x64 src/cli.ts --outfile dist/portal-linux-x64"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

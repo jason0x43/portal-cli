@@ -1,0 +1,50 @@
+name: server
+
+include:
+  - services/rvc-tmpdir-dev/compose.yaml
+  # these need GH registry access
+  - services/spellingbeeplus/compose.yaml
+  - services/worthy/compose.yaml
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    networks:
+      - server
+
+  # Routes are in caddy/sites/*.caddy; static sites are served from static/.
+  caddy:
+    image: caddy:2.11
+    restart: unless-stopped
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - ./static:/srv:ro
+      - caddy_data:/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - server
+
+volumes:
+  caddy_data:
+
+networks:
+  server:
+    enable_ipv6: true
+    driver: bridge
+    driver_opts:
+      com.docker.network.enable_ipv6: "true"
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.19.0.0/16
+        gateway: 172.19.0.1
+      - subnet: 2001:db8:2::/64

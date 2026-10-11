@@ -1,0 +1,3 @@
+http://worthy.jason0x43.dev {
+	reverse_proxy worthy:3000
+}
