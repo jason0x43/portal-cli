@@ -31,6 +31,9 @@ export function renderService(config: Config): string {
       ? { read_only: true }
       : config.hardened && { read_only: true, tmpfs: ["/tmp"] }),
     networks: [NETWORK],
+    // The local driver rotates and compresses logs (5 x 20MB by default).
+    // The default json-file driver grows without limit.
+    logging: { driver: "local" },
   };
 
   const service = deepMerge(base, config.compose);
@@ -86,6 +89,9 @@ export const STATIC_SERVER_IMAGE = "joseluisq/static-web-server:2.44.1";
  * image. HTML and other unhashed files are served with `no-cache` (browsers
  * keep a copy but revalidate it), since static-web-server's defaults would
  * cache them for up to a year and hide new deploys.
+ *
+ * Requests are logged at the info level, with the client IP that Caddy passes
+ * in X-Real-IP (see renderSite).
  */
 export function renderStaticDockerfile(config: Config): string {
   if (config.source.kind !== "static") {
@@ -106,6 +112,8 @@ export function renderStaticDockerfile(config: Config): string {
     `port = ${config.port}`,
     'root = "/public"',
     "cache-control-headers = false",
+    'log-level = "info"',
+    "log-x-real-ip = true",
     ...(fallback
       ? [`page-fallback = ${JSON.stringify(`/public/${fallback.replace(/^\/+/, "")}`)}`]
       : []),
@@ -129,10 +137,20 @@ export function renderStaticDockerfile(config: Config): string {
   ].join("\n");
 }
 
-/** Render caddy/sites/<name>.caddy. */
+/**
+ * Render caddy/sites/<name>.caddy. Every request reaches Caddy through
+ * cloudflared, so X-Forwarded-For only ever holds the tunnel's address. The
+ * client IP comes from Cloudflare's CF-Connecting-IP, passed on as X-Real-IP.
+ * When that header is missing, Caddy drops X-Real-IP rather than forwarding a
+ * client-supplied one.
+ */
 export function renderSite(config: Config): string {
   const address = config.domains.map((d) => `http://${d}`).join(", ");
-  const body = [`reverse_proxy ${config.name}:${config.port}`];
+  const body = [
+    `reverse_proxy ${config.name}:${config.port} {`,
+    "\theader_up X-Real-IP {http.request.header.CF-Connecting-IP}",
+    "}",
+  ];
   if (config.caddyExtra) {
     body.push(
       ...config.caddyExtra

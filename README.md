@@ -74,6 +74,8 @@ Every generated service:
 - runs as `1000:1000`, with `no-new-privileges` and all capabilities dropped
 - is attached only to the `server` network
 - mounts `services/<name>/data` at `/data`. The server's backup script snapshots SQLite files there automatically.
+- logs with Docker's `local` driver, which rotates and compresses them (5 files of 20MB). Read them with `portal logs`, or with `docker compose logs` in `services/<name>`.
+- gets the client's IP in the `X-Real-IP` header, taken from Cloudflare's `CF-Connecting-IP`. `X-Forwarded-For` only ever holds the tunnel's address.
 
 `[compose]` can't publish ports, use named volumes, or mount paths outside the service directory. `portal.toml` validation rejects those settings.
 
@@ -137,6 +139,7 @@ These commands also work without a `portal.toml`, for example `portal status -s 
   - **Hashed asset directories** can opt in to long-lived caching: `static = { dir = "dist", immutable = ["assets/**"] }`.
   - **SPAs:** `fallback = "index.html"` serves that page for any path that doesn't exist.
   - **404 page:** a `404.html` in the directory is used as the error page.
+  - **Logs:** every request is logged with its method, path and client IP (`x_real_ip`), and errors such as 404s get a second line with the status.
   - **Excluded files:** `.git` (at any depth) and the project's `portal.toml` are always left out of the image. Add more with `ignore`, which follows `.gitignore` conventions:
 
     ```toml

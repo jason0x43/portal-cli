@@ -36,7 +36,7 @@ describe("renderSite", () => {
       "/p",
     );
     expect(renderSite(config)).toBe(
-      "http://tmpdir.dev {\n\treverse_proxy tmpdir-dev:8080\n}\n",
+      "http://tmpdir.dev {\n\treverse_proxy tmpdir-dev:8080 {\n\t\theader_up X-Real-IP {http.request.header.CF-Connecting-IP}\n\t}\n}\n",
     );
   });
 
@@ -52,7 +52,7 @@ describe("renderSite", () => {
       "/p",
     );
     expect(renderSite(config)).toBe(
-      "http://a.tmpdir.dev, http://b.tmpdir.dev {\n\treverse_proxy app:80\n\tencode zstd gzip\n\theader -Server\n}\n",
+      "http://a.tmpdir.dev, http://b.tmpdir.dev {\n\treverse_proxy app:80 {\n\t\theader_up X-Real-IP {http.request.header.CF-Connecting-IP}\n\t}\n\tencode zstd gzip\n\theader -Server\n}\n",
     );
   });
 });
@@ -79,6 +79,7 @@ describe("renderService", () => {
           security_opt: ["no-new-privileges:true"],
           cap_drop: ["ALL"],
           networks: ["server"],
+          logging: { driver: "local" },
         },
       },
       networks: { server: { external: true } },
@@ -132,6 +133,8 @@ describe("static sites", () => {
         "port = 8080",
         'root = "/public"',
         "cache-control-headers = false",
+        'log-level = "info"',
+        "log-x-real-ip = true",
         "",
         "[advanced]",
         "",
