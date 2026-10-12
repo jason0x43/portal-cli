@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { formatValue, parseEnv, setVars, unsetVars } from "../src/dotenv.ts";
 import { DEPLOY_TAG_RE, deployTag, refTag, registryOf, stageStaticSite } from "../src/image.ts";
-import { q, qPath } from "../src/remote.ts";
+import { q, qPath, Remote } from "../src/remote.ts";
 
 describe("dotenv", () => {
   const text = "# secrets\nAPI_KEY=abc\nexport TOKEN='x y'\nURL=http://a # note\n";
@@ -144,5 +144,24 @@ describe("stageStaticSite", () => {
   test("anchored patterns don't match deeper paths", () => {
     expect(staged(["/sub/*.md", "/README.md"])).not.toContain("README.md");
     expect(staged(["/notes.md"])).toContain("sub/notes.md");
+  });
+});
+
+describe("Remote", () => {
+  test("runs over ssh in the root directory, under sh", () => {
+    const argv = new Remote("portal", "~/server").sshArgv("docker compose ps");
+    expect(argv[0]).toBe("ssh");
+    expect(argv.at(-2)).toBe("portal");
+    expect(argv.at(-1)).toBe("sh -c 'cd ~/server && docker compose ps'");
+  });
+
+  test("runs directly for the local host", () => {
+    const remote = new Remote("local", "~/server");
+    expect(remote.isLocal).toBe(true);
+    expect(remote.sshArgv("docker compose ps", true)).toEqual([
+      "sh",
+      "-c",
+      "cd ~/server && docker compose ps",
+    ]);
   });
 });

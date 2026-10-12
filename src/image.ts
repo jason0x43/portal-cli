@@ -137,6 +137,10 @@ export async function transfer(
   ref: string,
   log: (msg: string) => void,
 ): Promise<void> {
+  if (remote.isLocal) {
+    // Built by this machine's Docker, which is the server's
+    return;
+  }
   if (process.env.PORTAL_TRANSFER !== "load" && (await hasPlugin("pussh"))) {
     log("transferring with docker pussh");
     await run(["docker", "pussh", ref, remote.host], { inherit: true });

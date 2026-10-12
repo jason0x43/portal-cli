@@ -74,6 +74,9 @@ export async function run(
   return { code, stdout, stderr };
 }
 
+/** The host name that means "this machine": commands run directly, not over ssh. */
+export const LOCAL_HOST = "local";
+
 /** Runs commands on the server over a shared ssh connection. */
 export class Remote {
   private readonly sshOptions: string[];
@@ -95,18 +98,27 @@ export class Remote {
     ];
   }
 
+  /** Whether this runs on the server itself (host `local`), e.g. from a timer. */
+  get isLocal(): boolean {
+    return this.host === LOCAL_HOST;
+  }
+
   /**
-   * The ssh argv for running `command` in the root directory. ssh hands the
-   * command to the user's login shell, which may not be POSIX (zsh, fish), so
+   * The argv for running `command` in the root directory. Over ssh, the command
+   * goes to the user's login shell, which may not be POSIX (zsh, fish), so
    * it's wrapped in `sh -c` to get consistent globbing and word splitting.
    */
   sshArgv(command: string, tty = false): string[] {
+    const script = `cd ${qPath(this.root)} && ${command}`;
+    if (this.isLocal) {
+      return ["sh", "-c", script];
+    }
     return [
       "ssh",
       ...this.sshOptions,
       ...(tty ? ["-t"] : []),
       this.host,
-      `sh -c ${q(`cd ${qPath(this.root)} && ${command}`)}`,
+      `sh -c ${q(script)}`,
     ];
   }
 

@@ -49,7 +49,8 @@ Commands:
 Options:
   -c, --config PATH       Config file (default: ./portal.toml)
   -s, --service NAME      Act on a service without its portal.toml
-      --host HOST         ssh host (default: portal)
+      --host HOST         ssh host (default: portal), or "local" to run on
+                          this machine (e.g. from a timer on the server)
       --root PATH         Server config dir (default: ~/server)
   -h, --help              Show this help
 
