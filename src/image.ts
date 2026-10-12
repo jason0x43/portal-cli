@@ -170,14 +170,21 @@ export async function pull(
   ref: string,
   login?: { user: string; token: string },
 ): Promise<string> {
+  const registry = registryOf(ref);
   if (login) {
-    const registry = registryOf(ref);
     await remote.exec(
       `docker login ${q(registry)} -u ${q(login.user)} --password-stdin`,
       { input: login.token },
     );
   }
-  await remote.exec(`docker pull ${q(ref)}`, { inherit: true });
+  try {
+    await remote.exec(`docker pull ${q(ref)}`, { inherit: true });
+  } finally {
+    // CI tokens expire with the job, so don't leave them in the server's docker config
+    if (login) {
+      await remote.exec(`docker logout ${q(registry)}`, { allowFail: true });
+    }
+  }
   const tag = refTag(ref);
   if (tag && tag !== "latest") {
     return deployTag(tag);

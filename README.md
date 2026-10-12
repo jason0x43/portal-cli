@@ -134,13 +134,28 @@ These commands also work without a `portal.toml`, for example `portal status -s 
 
 ### CI
 
-The workflow builds and pushes the image to a registry as usual. A single step then deploys it:
+This repo is also a GitHub Action. A workflow builds and pushes its image as usual, then deploys it with the action:
 
 ```yaml
-- run: ./portal deploy --image ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-  env:
-    PORTAL_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- uses: actions/checkout@v7 # the action reads portal.toml from the repo
+# ... build and push ghcr.io/owner/app:sha-<commit> ...
+- uses: jason0x43/portal-cli@v0.1.0
+  with:
+    config: portal.toml
+    image: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+    host: ${{ vars.DEPLOY_HOST }}
+    user: ${{ vars.DEPLOY_USER }}
+    ssh-key: ${{ secrets.DEPLOY_KEY }}
+    known-hosts: ${{ secrets.DEPLOY_HOST_KEY }}
 ```
+
+The action:
+
+1. installs Bun and runs portal from source at the referenced tag
+2. sets up ssh with the given key and `known_hosts`
+3. runs `portal deploy --image`
+
+The server logs in to the registry with the job's `GITHUB_TOKEN` and logs out once the pull is done. The token needs `packages: read`.
 
 ## Development
 

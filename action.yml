@@ -1,0 +1,81 @@
+name: portal deploy
+description: Deploy a prebuilt image to the portal server with `portal deploy --image`.
+
+inputs:
+  image:
+    description: Image reference to deploy, e.g. ghcr.io/owner/app:sha-abc1234
+    required: true
+  config:
+    description: Path to the service's portal.toml, relative to the workspace
+    default: portal.toml
+  host:
+    description: Server hostname or IP
+    required: true
+  user:
+    description: ssh user on the server
+    required: true
+  ssh-key:
+    description: Private key for the ssh user
+    required: true
+  known-hosts:
+    description: known_hosts line(s) for the server, so its host key is verified
+    required: true
+  registry-user:
+    description: User for logging the server in to the image registry
+    default: ${{ github.actor }}
+  registry-token:
+    description: Token for logging the server in to the image registry
+    default: ${{ github.token }}
+  timeout:
+    description: Seconds to wait for the container to come up
+    default: "60"
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.3
+
+    - name: Install portal
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: bun install --frozen-lockfile --production
+
+    - name: Configure ssh
+      shell: bash
+      env:
+        HOST: ${{ inputs.host }}
+        SSH_USER: ${{ inputs.user }}
+        SSH_KEY: ${{ inputs.ssh-key }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/portal-deploy.key
+        chmod 600 ~/.ssh/portal-deploy.key
+        printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+        cat >> ~/.ssh/config <<EOF
+        Host portal-deploy
+          HostName $HOST
+          User $SSH_USER
+          IdentityFile ~/.ssh/portal-deploy.key
+          IdentitiesOnly yes
+        EOF
+
+    - name: Deploy
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        CONFIG: ${{ inputs.config }}
+        TIMEOUT: ${{ inputs.timeout }}
+        PORTAL_REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        REGISTRY_USER: ${{ inputs.registry-user }}
+        NO_COLOR: "1"
+      run: >
+        bun "$GITHUB_ACTION_PATH/src/cli.ts" deploy
+        --config "$CONFIG"
+        --host portal-deploy
+        --image "$IMAGE"
+        --registry-user "$REGISTRY_USER"
+        --timeout "$TIMEOUT"
