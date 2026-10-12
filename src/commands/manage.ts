@@ -1,12 +1,11 @@
-import { imageRepo, removeInclude, servicePath } from "../compose.ts";
+import { imageRepo, servicePath } from "../compose.ts";
 import { formatValue, isValidKey, parseEnv, setVars, unsetVars } from "../dotenv.ts";
 import { DEPLOY_TAG_RE } from "../image.ts";
-import { q } from "../remote.ts";
+import { q, type Remote } from "../remote.ts";
 import {
-  commitServer,
   DeployError,
   envPath,
-  ROOT_COMPOSE,
+  serviceCompose,
   sitePath,
   updateSite,
   waitForService,
@@ -107,7 +106,7 @@ async function applyEnv(target: Target, restart: boolean) {
   }
   // Recreate rather than restart so compose re-reads env_file
   step(`recreating ${target.name} to apply changes`);
-  await target.remote.compose(`up -d --force-recreate ${q(target.name)}`, {
+  await serviceCompose(target.remote, target.name, "up -d --force-recreate", {
     inherit: true,
   });
   await waitForService(target.remote, target.name);
@@ -119,8 +118,10 @@ async function applyEnv(target: Target, restart: boolean) {
 export async function status(target: Target) {
   const { remote, name } = target;
   if (await isComposeService(target)) {
-    await remote.compose(
-      `ps -a --format 'table {{.Name}}\\t{{.Status}}\\t{{.RunningFor}}' ${q(name)}`,
+    await serviceCompose(
+      remote,
+      name,
+      `ps -a --format 'table {{.Name}}\\t{{.Status}}\\t{{.RunningFor}}'`,
       { inherit: true },
     );
     const images = await imageTags(target);
@@ -171,8 +172,10 @@ export async function logs(
   { follow = false, tail = "100" }: { follow?: boolean; tail?: string } = {},
 ) {
   await requireComposeService(target);
-  await target.remote.compose(
-    `logs --tail ${q(tail)}${follow ? " --follow" : ""} ${q(target.name)}`,
+  await serviceCompose(
+    target.remote,
+    target.name,
+    `logs --tail ${q(tail)}${follow ? " --follow" : ""}`,
     { inherit: true, tty: follow && process.stdout.isTTY },
   );
 }
@@ -180,7 +183,7 @@ export async function logs(
 export async function restart(target: Target) {
   await requireComposeService(target);
   step(`restarting ${target.name}`);
-  await target.remote.compose(`restart ${q(target.name)}`, { inherit: true });
+  await serviceCompose(target.remote, target.name, "restart", { inherit: true });
   await waitForService(target.remote, target.name);
   done(`${target.name} is running`);
 }
@@ -206,7 +209,7 @@ export async function rollback(target: Target, tag?: string) {
   const repo = imageRepo(target.name);
   step(`switching ${target.name} to ${chosen.tag}`);
   await target.remote.exec(`docker tag ${q(`${repo}:${chosen.tag}`)} ${q(`${repo}:latest`)}`);
-  await target.remote.compose(`up -d --force-recreate ${q(target.name)}`, {
+  await serviceCompose(target.remote, target.name, "up -d --force-recreate", {
     inherit: true,
   });
   await waitForService(target.remote, target.name);
@@ -217,7 +220,7 @@ export async function rollback(target: Target, tag?: string) {
 
 export async function remove(
   target: Target,
-  { purge = false, yes = false, commit = true, push = false } = {},
+  { purge = false, yes = false } = {},
 ) {
   const { remote, name } = target;
   const isService = await isComposeService(target);
@@ -233,7 +236,6 @@ export async function remove(
     throw new DeployError("cancelled (pass --yes to skip this prompt)");
   }
 
-  const changed = [sitePath(name)];
   if (hasSite) {
     step("removing Caddy route");
     await updateSite(remote, name, undefined);
@@ -241,14 +243,8 @@ export async function remove(
 
   if (isService) {
     step(`stopping ${name}`);
-    await remote.compose(`rm --stop --force ${q(name)}`, { inherit: true });
-    const root = await remote.readFile(ROOT_COMPOSE);
-    const updated = root && removeInclude(root, servicePath(name));
-    if (updated !== undefined && updated !== "") {
-      await remote.writeFile(ROOT_COMPOSE, updated);
-    }
+    await serviceCompose(remote, name, "down", { inherit: true });
     await remote.removeFile(servicePath(name));
-    changed.push(ROOT_COMPOSE, servicePath(name));
     await remote.exec(
       `docker image ls ${q(imageRepo(name))} --format '{{.Repository}}:{{.Tag}}' | xargs -r docker image rm`,
       { allowFail: true },
@@ -261,17 +257,75 @@ export async function remove(
   } else if (isService) {
     await remote.exec(`rmdir ${q(`services/${name}`)} 2>/dev/null || true`);
   }
+  done(`removed ${name}`);
+}
 
-  if (commit) {
-    // Only paths git knows about can be committed as deletions
-    const tracked = await remote.exec(
-      `git ls-files -- ${changed.map(q).join(" ")} 2>/dev/null || true`,
-    );
-    const paths = [...new Set([ROOT_COMPOSE, ...tracked.stdout.trim().split("\n").filter(Boolean)])];
-    const hash = await commitServer(remote, paths, `Remove ${name}`, { push });
-    if (hash) {
-      done(`committed server config ${hash}`);
+// ---------------------------------------------------------------- list
+
+interface ServiceSummary {
+  name: string;
+  state: string;
+  tag?: string;
+  route?: string;
+}
+
+/** Every service on the server, with its state, deployed tag, and route. */
+export async function list(remote: Remote) {
+  const result = await remote.exec(
+    [
+      "for f in services/*/compose.yaml; do",
+      '  [ -e "$f" ] || continue',
+      '  n=${f#services/}; n=${n%/compose.yaml}',
+      `  printf 'S\\t%s\\t%s\\n' "$n" "$(docker inspect --format '{{.State.Status}}{{if .State.Health}} ({{.State.Health.Status}}){{end}}' "$n" 2>/dev/null || echo missing)"`,
+      `  docker image ls "portal/$n" --format "I\\t$n\\t{{.Tag}}\\t{{.ID}}"`,
+      `  [ -f "caddy/sites/$n.caddy" ] && printf 'R\\t%s\\t%s\\n' "$n" "$(head -1 "caddy/sites/$n.caddy" | sed 's/ *{$//; s|http://||g')"`,
+      "done; true",
+    ].join("\n"),
+  );
+
+  const services = new Map<string, ServiceSummary>();
+  const images = new Map<string, [string, string][]>();
+  for (const line of result.stdout.split("\n")) {
+    const [kind, name, a = "", b = ""] = line.split("\t");
+    if (!name) {
+      continue;
+    }
+    if (kind === "S") {
+      services.set(name, { name, state: a });
+    } else if (kind === "I") {
+      images.set(name, [...(images.get(name) ?? []), [a, b]]);
+    } else if (kind === "R" && services.has(name)) {
+      services.get(name)!.route = a;
     }
   }
-  done(`removed ${name}`);
+  for (const [name, rows] of images) {
+    const latestId = rows.find(([tag]) => tag === "latest")?.[1];
+    const service = services.get(name);
+    if (service && latestId) {
+      service.tag = rows
+        .filter(([tag, id]) => id === latestId && DEPLOY_TAG_RE.test(tag))
+        .map(([tag]) => tag)
+        .sort()
+        .at(-1);
+    }
+  }
+
+  if (services.size === 0) {
+    console.error(dim(`no services on ${remote.host}`));
+    return;
+  }
+  const rows = [...services.values()].map((s) => [
+    s.name,
+    s.state,
+    s.route ?? "-",
+    s.tag ?? "-",
+  ]);
+  const header = ["SERVICE", "STATE", "ROUTE", "IMAGE"];
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
+  const format = (r: string[]) =>
+    r.map((c, i) => (i < r.length - 1 ? c.padEnd(widths[i]!) : c)).join("  ");
+  console.log(bold(format(header)));
+  for (const row of rows) {
+    console.log(format(row));
+  }
 }

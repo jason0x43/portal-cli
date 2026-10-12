@@ -7,14 +7,24 @@ import {
   loadConfig,
   type Config,
 } from "./config.ts";
-import { q, Remote } from "./remote.ts";
+import { servicePath } from "./compose.ts";
+import { q, Remote, type RunOptions, type RunResult } from "./remote.ts";
 import { dim } from "./ui.ts";
 
-export const ROOT_COMPOSE = "compose.yaml";
 export const CADDYFILE = "/etc/caddy/Caddyfile";
 
 export const sitePath = (name: string) => `caddy/sites/${name}.caddy`;
 export const envPath = (name: string) => `services/${name}/.env`;
+
+/** `docker compose` for a service's own project (services/<name>/compose.yaml). */
+export function serviceCompose(
+  remote: Remote,
+  name: string,
+  args: string,
+  options?: RunOptions,
+): Promise<RunResult> {
+  return remote.exec(`docker compose -f ${q(servicePath(name))} ${args}`, options);
+}
 
 export interface TargetOptions {
   config?: string;
@@ -71,7 +81,7 @@ export async function waitForService(
 
   while (Date.now() < deadline) {
     const result = await remote.exec(
-      `id=$(docker compose ps -aq ${q(name)}) && [ -n "$id" ] && docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$id"`,
+      `docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' ${q(name)}`,
       { allowFail: true },
     );
     const [status = "missing", health = "none", restarts = "0"] = result.stdout
@@ -101,7 +111,7 @@ export async function waitForService(
   }
 
   console.error(dim(`--- last logs for ${name} ---`));
-  await remote.compose(`logs --no-color --tail 40 ${q(name)}`, {
+  await serviceCompose(remote, name, `logs --no-color --tail 40`, {
     inherit: true,
     allowFail: true,
   });
@@ -163,28 +173,4 @@ export function caddyErrors(output: string): string {
       }
     })
     .join("\n  ");
-}
-
-/**
- * Commit changes to `paths` in the server's git repo. Returns the new commit's
- * short hash, or undefined if nothing changed or the root isn't a git repo.
- */
-export async function commitServer(
-  remote: Remote,
-  paths: string[],
-  message: string,
-  { push = false }: { push?: boolean } = {},
-): Promise<string | undefined> {
-  if (!(await remote.exists(".git"))) {
-    return;
-  }
-  const pathspec = paths.map(q).join(" ");
-  const result = await remote.exec(
-    `git add -A -- ${pathspec} && if git diff --cached --quiet -- ${pathspec}; then :; else git commit -q -m ${q(message)} -- ${pathspec} && git rev-parse --short HEAD; fi`,
-  );
-  const commit = result.stdout.trim() || undefined;
-  if (commit && push) {
-    await remote.exec("git push -q", { inherit: true });
-  }
-  return commit;
 }

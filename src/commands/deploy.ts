@@ -1,5 +1,4 @@
 import {
-  addInclude,
   imageRepo,
   renderService,
   renderSite,
@@ -10,9 +9,8 @@ import type { Config } from "../config.ts";
 import * as image from "../image.ts";
 import { q, Remote } from "../remote.ts";
 import {
-  commitServer,
   DeployError,
-  ROOT_COMPOSE,
+  serviceCompose,
   sitePath,
   updateSite,
   waitForService,
@@ -25,8 +23,6 @@ export interface DeployOptions {
   registryUser?: string;
   registryToken?: string;
   dryRun?: boolean;
-  commit?: boolean;
-  push?: boolean;
   /** Seconds to wait for the container to come up */
   timeout?: number;
 }
@@ -42,16 +38,6 @@ export async function deploy(config: Config, options: DeployOptions = {}) {
   }
 
   await deployContainer(config, remote, options);
-
-  if (options.commit !== false) {
-    const paths = [sitePath(config.name), servicePath(config.name), ROOT_COMPOSE];
-    const commit = await commitServer(remote, paths, `Deploy ${config.name}`, {
-      push: options.push,
-    });
-    if (commit) {
-      done(`committed server config ${commit}${options.push ? " and pushed" : ""}`);
-    }
-  }
 
   done(
     `deployed ${bold(config.name)} to ${config.domains.map((d) => `https://${d}`).join(", ")}`,
@@ -108,19 +94,9 @@ async function deployContainer(
     await remote.exec(`mkdir -p ${q(`services/${name}/data`)}`);
   }
 
-  const root = await remote.readFile(ROOT_COMPOSE);
-  if (root === undefined) {
-    throw new DeployError(`${remote.root}/${ROOT_COMPOSE} not found on ${remote.host}`);
-  }
-  const updatedRoot = addInclude(root, composePath);
-  if (updatedRoot !== undefined) {
-    step(`adding ${composePath} to ${ROOT_COMPOSE}`);
-    await remote.writeFile(ROOT_COMPOSE, updatedRoot);
-  }
-
   step(`starting ${name}`);
   try {
-    await remote.compose(`up -d --force-recreate ${q(name)}`, { inherit: true });
+    await serviceCompose(remote, name, "up -d --force-recreate", { inherit: true });
     await waitForService(remote, name, { timeout: options.timeout });
   } catch (err) {
     if (previousImage && previousCompose !== undefined) {
@@ -154,7 +130,7 @@ async function restorePrevious(
   try {
     await remote.exec(`docker tag ${q(imageId)} ${q(`${imageRepo(name)}:latest`)}`);
     await remote.writeFile(servicePath(name), compose);
-    await remote.compose(`up -d --force-recreate ${q(name)}`, { inherit: true });
+    await serviceCompose(remote, name, "up -d --force-recreate", { inherit: true });
     await waitForService(remote, name);
     done(`${name} is running the previous version`);
   } catch (err) {

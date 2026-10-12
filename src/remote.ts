@@ -95,14 +95,18 @@ export class Remote {
     ];
   }
 
-  /** The ssh argv for running `command` in the root directory. */
+  /**
+   * The ssh argv for running `command` in the root directory. ssh hands the
+   * command to the user's login shell, which may not be POSIX (zsh, fish), so
+   * it's wrapped in `sh -c` to get consistent globbing and word splitting.
+   */
   sshArgv(command: string, tty = false): string[] {
     return [
       "ssh",
       ...this.sshOptions,
       ...(tty ? ["-t"] : []),
       this.host,
-      `cd ${qPath(this.root)} && ${command}`,
+      `sh -c ${q(`cd ${qPath(this.root)} && ${command}`)}`,
     ];
   }
 

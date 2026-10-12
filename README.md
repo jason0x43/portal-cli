@@ -10,16 +10,16 @@ A project only needs a Dockerfile and a `portal.toml`. `portal deploy` takes car
 
 1. builds the image for linux/amd64
 2. copies it to the server
-3. writes `services/<name>/compose.yaml` and adds it to the root `include:` list
+3. writes `services/<name>/compose.yaml`, a compose project of its own
 4. starts the container and waits for it to come up
 5. writes the Caddy route and reloads Caddy
-6. commits the change to the server's git repo
 
 portal expects the server config directory (`~/server` by default) to contain:
 
-- a root `compose.yaml` that `include:`s each service's `services/<name>/compose.yaml` and defines a `server` network
-- a `caddy` service on that network that loads `caddy/Caddyfile`, which imports `caddy/sites/*.caddy`
-- a git repo, if you want deploys committed (optional)
+- a root `compose.yaml` that runs a `caddy` service and creates a network named `server`. Services join it as an external network, and Caddy reaches them by name.
+- a `caddy/Caddyfile` that imports `caddy/sites/*.caddy`
+
+portal never edits the root `compose.yaml`. Everything it writes is generated, so a server config repo can gitignore `services/` and `caddy/sites/`.
 
 ## Install
 
@@ -102,6 +102,7 @@ The second form reads the value from stdin, so it stays out of shell history. `e
 ### Other commands
 
 ```bash
+portal ls
 portal status
 portal logs -f
 portal restart
@@ -109,6 +110,7 @@ portal rollback
 portal remove
 ```
 
+- `ls` lists every service on the server, with its state, route and deployed image tag.
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
@@ -145,7 +147,7 @@ This repo is also a GitHub Action. A workflow builds and pushes its image as usu
 ```yaml
 - uses: actions/checkout@v7 # the action reads portal.toml from the repo
 # ... build and push ghcr.io/owner/app:sha-<commit> ...
-- uses: jason0x43/portal-cli@v0.1.0
+- uses: jason0x43/portal-cli@v0.2.0
   with:
     config: portal.toml
     image: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}

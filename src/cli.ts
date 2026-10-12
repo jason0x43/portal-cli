@@ -6,14 +6,22 @@ import {
   envList,
   envSet,
   envUnset,
+  list,
   logs,
   remove,
   restart,
   rollback,
   status,
 } from "./commands/manage.ts";
-import { ConfigError, loadConfig } from "./config.ts";
-import { CommandError } from "./remote.ts";
+import { existsSync } from "node:fs";
+import {
+  CONFIG_FILE,
+  ConfigError,
+  DEFAULT_HOST,
+  DEFAULT_ROOT,
+  loadConfig,
+} from "./config.ts";
+import { CommandError, Remote } from "./remote.ts";
 import { DeployError, resolveTarget } from "./server.ts";
 import { red } from "./ui.ts";
 import pkg from "../package.json";
@@ -24,6 +32,7 @@ Usage: portal <command> [options]
 
 Commands:
   init                    Create a portal.toml for this project
+  ls                      List every service on the server
   deploy                  Build, upload, and start the service
   status                  Show the container, image tags, and route
   logs [-f] [-n N]        Show service logs
@@ -47,8 +56,6 @@ deploy options:
       --registry-token T  Registry login token (or $PORTAL_REGISTRY_TOKEN)
       --timeout SECONDS   How long to wait for the container (default: 60)
       --dry-run           Print the generated files without deploying
-      --no-commit         Don't commit to the server's git repo
-      --push              Push the server repo after committing
 
 init options:
       --name, --domain, --port, --static DIR, --image REF, --force
@@ -67,8 +74,6 @@ const options = {
   "registry-token": { type: "string" },
   timeout: { type: "string" },
   "dry-run": { type: "boolean" },
-  "no-commit": { type: "boolean" },
-  push: { type: "boolean" },
   // env
   show: { type: "boolean" },
   "no-restart": { type: "boolean" },
@@ -104,7 +109,6 @@ async function main(argv: string[]) {
   }
 
   const target = () => resolveTarget(opts);
-  const commit = !opts["no-commit"];
 
   switch (command) {
     case "init":
@@ -123,8 +127,6 @@ async function main(argv: string[]) {
         registryUser: opts["registry-user"],
         registryToken: opts["registry-token"] ?? process.env.PORTAL_REGISTRY_TOKEN,
         dryRun: opts["dry-run"],
-        commit,
-        push: opts.push,
         timeout,
       });
     }
@@ -157,12 +159,21 @@ async function main(argv: string[]) {
       return rollback(await target(), args[0]);
 
     case "remove":
-      return remove(await target(), {
-        purge: opts.purge,
-        yes: opts.yes,
-        commit,
-        push: opts.push,
-      });
+      return remove(await target(), { purge: opts.purge, yes: opts.yes });
+
+    case "ls":
+    case "list": {
+      // Uses portal.toml's host and root if there is one, but doesn't need it
+      const config = existsSync(opts.config ?? CONFIG_FILE)
+        ? await loadConfig(opts.config)
+        : undefined;
+      return list(
+        new Remote(
+          opts.host ?? config?.host ?? DEFAULT_HOST,
+          opts.root ?? config?.root ?? DEFAULT_ROOT,
+        ),
+      );
+    }
 
     default:
       throw new ConfigError(`unknown command "${command}" (see portal --help)`);
