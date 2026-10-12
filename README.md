@@ -165,6 +165,18 @@ The action:
 
 The server logs in to the registry with the job's `GITHUB_TOKEN` and logs out once the pull is done. The token needs `packages: read`.
 
+## Design notes
+
+These are the decisions behind the server layout. portal enforces most of them.
+
+- **Routes are kept separate from services.** Caddy mounts only `caddy/`, so routes live in `caddy/sites/<name>.caddy`, not in each service's directory. Mounting `services/` would let Caddy read every service's `.env` and data, and Caddy is the container that handles traffic from the internet. portal keeps the two files together logically: `deploy` and `remove` handle both, and `status` shows both.
+- **Caddy gets no Docker socket.** Routes are generated files, not container labels (the caddy-docker-proxy approach), because access to the socket is root-equivalent on the host.
+- **Services can't publish ports.** A published port is reachable from outside the Cloudflare tunnel, and Docker's port publishing also bypasses host firewall rules. Services are reachable only through Caddy on the `server` network.
+- **State is bind-mounted under the service directory.** Named volumes are rejected because they live outside the server config directory, where backups don't reach them. Everything a service stores is in `services/<name>/data`, where the backup script finds it, including its SQLite databases.
+- **Each service is its own compose project.** Deploys never edit the shared root `compose.yaml`, so they can't break the infrastructure or other services. Everything portal writes is generated from each project's `portal.toml`, so the server config repo only tracks hand-written infrastructure.
+- **Containers are hardened by default.** They run as `1000:1000` (the owner of `data/`), with all capabilities dropped and `no-new-privileges`. Overriding any of this means setting it explicitly in `[compose]`.
+- **Static sites are containers.** Content is baked into a static-web-server image, so a static site deploys, rolls back and is removed like any other service. It's served with `no-cache` by default, because static-web-server's defaults (a day for HTML, a year for JS and CSS) would hide new deploys from returning visitors.
+
 ## Development
 
 ```bash
