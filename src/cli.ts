@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { deploy } from "./commands/deploy.ts";
 import { init } from "./commands/init.ts";
-import { update } from "./commands/update.ts";
+import { rollbackUpdate, update } from "./commands/update.ts";
 import {
   envList,
   envSet,
@@ -34,7 +34,8 @@ Usage: portal <command> [options]
 Commands:
   init                    Create a portal.toml for this project
   ls                      List every service on the server
-  update                  Update the shared infrastructure (cloudflared, caddy)
+  update [--rollback]     Update the shared infrastructure (cloudflared, caddy),
+                          or switch back to the images the last update replaced
   deploy                  Build, upload, and start the service
   status                  Show the container, image tags, and route
   logs [-f] [-n N]        Show service logs
@@ -82,6 +83,8 @@ const options = {
   // logs
   follow: { type: "boolean", short: "f" },
   tail: { type: "string", short: "n" },
+  // update
+  rollback: { type: "boolean" },
   // remove
   purge: { type: "boolean" },
   yes: { type: "boolean", short: "y" },
@@ -186,7 +189,9 @@ async function main(argv: string[]) {
       return list(await serverRemote(opts));
 
     case "update":
-      return update(await serverRemote(opts));
+      return opts.rollback
+        ? rollbackUpdate(await serverRemote(opts))
+        : update(await serverRemote(opts));
 
     default:
       throw new ConfigError(`unknown command "${command}" (see portal --help)`);

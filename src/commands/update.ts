@@ -1,64 +1,291 @@
 import { q, type Remote } from "../remote.ts";
-import { waitForService } from "../server.ts";
+import { DeployError, waitForService } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
 
 /** Service images older than this get a reminder to redeploy them. */
 export const STALE_IMAGE_DAYS = 30;
+/** How long routes get to match their pre-update status after recreating. */
+const ROUTE_SETTLE_SECONDS = 60;
 
 interface InfraContainer {
   service: string;
   container: string;
+  /** Image reference from the compose file, e.g. caddy:2.11 */
+  ref: string;
+  /** Image the container is running */
   imageId: string;
 }
 
+/** `ref` with a suffix added to its tag, e.g. caddy:2.11 → caddy:2.11-previous */
+function suffixedRef(ref: string, suffix: string): string {
+  const lastPart = ref.slice(ref.lastIndexOf("/") + 1);
+  return lastPart.includes(":") ? `${ref}-${suffix}` : `${ref}:latest-${suffix}`;
+}
+
+/** The local tag that keeps the image an update replaced, for rollback. */
+export const previousRef = (ref: string) => suffixedRef(ref, "previous");
+
+/**
+ * A temporary tag holding the running image during an update. It has to be
+ * set before pulling: with Docker's containerd image store, once a pull moves
+ * the tag, the old image can no longer be addressed by its ID.
+ */
+const holdRef = (ref: string) => suffixedRef(ref, "pre-update");
+
 /** Containers in the root (infrastructure) project and the images they run. */
 async function infraContainers(remote: Remote): Promise<InfraContainer[]> {
-  const result = await remote.compose(
-    `ps --format '{{.Service}}\t{{.Name}}'`,
+  const result = await remote.exec(
+    `docker compose ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}\t{{.Name}}\t{{.Config.Image}}\t{{.Image}}'`,
   );
-  const containers: InfraContainer[] = [];
-  for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
-    const [service = "", container = ""] = line.split("\t");
-    const image = await remote.exec(
-      `docker inspect --format '{{.Image}}' ${q(container)}`,
-    );
-    containers.push({ service, container, imageId: image.stdout.trim() });
+  return result.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [service = "", name = "", ref = "", imageId = ""] = line.split("\t");
+      return { service, container: name.replace(/^\//, ""), ref, imageId };
+    });
+}
+
+async function imageId(remote: Remote, ref: string): Promise<string | undefined> {
+  const result = await remote.exec(
+    `docker image inspect --format '{{.Id}}' ${q(ref)}`,
+    { allowFail: true },
+  );
+  return result.code === 0 ? result.stdout.trim() : undefined;
+}
+
+/** Every domain with a Caddy route. */
+async function routeDomains(remote: Remote): Promise<string[]> {
+  const result = await remote.exec(
+    "for f in caddy/sites/*.caddy; do [ -e \"$f\" ] && head -1 \"$f\"; done; true",
+  );
+  return result.stdout
+    .split("\n")
+    .flatMap((line) => line.replace(/\s*\{\s*$/, "").split(","))
+    .map((address) => address.trim().replace(/^https?:\/\//, ""))
+    .filter((domain) => domain && !domain.includes("*"));
+}
+
+export type RouteStatuses = Map<string, string>;
+
+/**
+ * Request each domain's root through Cloudflare, from here rather than the
+ * server, so the tunnel and Caddy are both exercised.
+ */
+async function checkRoutes(domains: string[]): Promise<RouteStatuses> {
+  const entries = await Promise.all(
+    domains.map(async (domain): Promise<[string, string]> => {
+      try {
+        const response = await fetch(`https://${domain}/`, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(15_000),
+        });
+        await response.body?.cancel();
+        return [domain, String(response.status)];
+      } catch (err) {
+        return [domain, (err as Error).name === "TimeoutError" ? "timeout" : "error"];
+      }
+    }),
+  );
+  return new Map(entries);
+}
+
+export function routeDifferences(before: RouteStatuses, after: RouteStatuses): string[] {
+  return [...before].flatMap(([domain, status]) =>
+    after.get(domain) === status
+      ? []
+      : [`${domain}: ${status} before, ${after.get(domain) ?? "no response"} now`],
+  );
+}
+
+/** Poll until every route returns its baseline status, or time out. */
+async function waitForRoutes(
+  domains: string[],
+  baseline: RouteStatuses,
+): Promise<string[]> {
+  const deadline = Date.now() + ROUTE_SETTLE_SECONDS * 1000;
+  let differences: string[] = [];
+  while (Date.now() < deadline) {
+    differences = routeDifferences(baseline, await checkRoutes(domains));
+    if (differences.length === 0) {
+      return [];
+    }
+    await Bun.sleep(3000);
   }
-  return containers;
+  return differences;
+}
+
+/**
+ * Point each container's image reference at the image `sources` names for it
+ * (a tag, since old images may have no addressable ID), and recreate it.
+ */
+async function switchImages(
+  remote: Remote,
+  containers: InfraContainer[],
+  sources: Map<string, string>,
+) {
+  for (const container of containers) {
+    const source = sources.get(container.service);
+    if (source && source !== container.ref) {
+      await remote.exec(`docker tag ${q(source)} ${q(container.ref)}`);
+    }
+  }
+  const services = containers.map((c) => q(c.service)).join(" ");
+  // The images are local now; don't let compose pull the tags forward again
+  await remote.compose(`up -d --pull never ${services}`, { inherit: true });
 }
 
 /**
  * Pull newer images for the shared infrastructure (the root compose project)
- * and recreate the containers whose image changed. Services aren't touched:
- * CI redeploys registry-built apps, and locally built ones need `portal
- * deploy`, so this only reports which service images are getting old.
+ * and recreate the containers whose image changed. If a container doesn't
+ * come up, or any site's response status changes, the previous images are put
+ * back. Services aren't touched: CI redeploys registry-built apps, and locally
+ * built ones need `portal deploy`, so this only reports which service images
+ * are getting old.
  */
 export async function update(remote: Remote) {
-  const before = await infraContainers(remote);
+  const containers = await infraContainers(remote);
+  const domains = await routeDomains(remote);
+  step(`checking ${domains.length} routes`);
+  const baseline = await checkRoutes(domains);
+
+  // Hold on to what's running before the pull moves any tags
+  const held = new Set<string>();
+  for (const { service, ref, imageId: id } of containers) {
+    const tagged = await remote.exec(`docker tag ${q(id)} ${q(holdRef(ref))}`, {
+      allowFail: true,
+    });
+    if (tagged.code === 0) {
+      held.add(service);
+    } else {
+      warn(`couldn't keep ${service}'s current image, so it can't be rolled back`);
+    }
+  }
+  const releaseHolds = () =>
+    remote.exec(
+      `docker image rm ${containers.map((c) => q(holdRef(c.ref))).join(" ")} >/dev/null 2>&1; true`,
+    );
 
   step("pulling infrastructure images");
-  await remote.compose("pull --quiet", { inherit: true });
-  // Only containers whose image or config changed are recreated
-  await remote.compose("up -d", { inherit: true });
-
-  const after = await infraContainers(remote);
-  const changed = after.filter(
-    (c) => before.find((b) => b.service === c.service)?.imageId !== c.imageId,
-  );
-  for (const { service, container } of changed) {
-    await waitForService(remote, container);
-    done(`updated ${bold(service)}`);
+  try {
+    await remote.compose("pull --quiet", { inherit: true });
+  } catch (err) {
+    await releaseHolds();
+    throw err;
   }
+
+  const changed: InfraContainer[] = [];
+  for (const container of containers) {
+    const pulled = await imageId(remote, container.ref);
+    if (pulled && pulled !== container.imageId) {
+      changed.push(container);
+    }
+  }
+
+  // Keep what was running, both for an automatic rollback and for
+  // `portal update --rollback` later
+  for (const { service, ref } of changed) {
+    if (held.has(service)) {
+      await remote.exec(`docker tag ${q(holdRef(ref))} ${q(previousRef(ref))}`);
+    }
+  }
+  await releaseHolds();
+
   if (changed.length === 0) {
     done("infrastructure is up to date");
+    await reportStaleServices(remote);
+    return;
   }
 
-  // Old images replaced by this or earlier updates no longer have a tag
+  step(`updating ${changed.map((c) => c.service).join(", ")}`);
+  let failure: string | undefined;
+  try {
+    await switchImages(remote, changed, new Map());
+    for (const { container } of changed) {
+      await waitForService(remote, container);
+    }
+    const differences = await waitForRoutes(domains, baseline);
+    if (differences.length > 0) {
+      failure = `routes changed after the update:\n  ${differences.join("\n  ")}`;
+    }
+  } catch (err) {
+    failure = (err as Error).message;
+  }
+
+  if (failure) {
+    const restorable = changed.filter((c) => held.has(c.service));
+    if (restorable.length < changed.length) {
+      throw new DeployError(
+        `${failure}\nThe previous image of ${changed
+          .filter((c) => !held.has(c.service))
+          .map((c) => c.service)
+          .join(", ")} wasn't kept, so it can't be restored automatically.`,
+      );
+    }
+    warn("update failed; restoring the previous images");
+    await switchImages(
+      remote,
+      changed,
+      new Map(changed.map((c) => [c.service, previousRef(c.ref)])),
+    );
+    for (const { container } of changed) {
+      await waitForService(remote, container);
+    }
+    const stillDifferent = await waitForRoutes(domains, baseline);
+    throw new DeployError(
+      `${failure}\n${
+        stillDifferent.length === 0
+          ? "Restored the previous images; routes are back to their earlier status."
+          : `Restored the previous images, but routes still differ:\n  ${stillDifferent.join("\n  ")}`
+      }\nPin a version in the root compose.yaml to keep this update from being pulled again.`,
+    );
+  }
+
+  for (const { service } of changed) {
+    done(`updated ${bold(service)}`);
+  }
+  done(`all ${domains.length} routes respond as before`);
+
+  // Images replaced by earlier updates are untagged now; the ones this update
+  // replaced are kept under their -previous tags
   await remote.exec("docker image prune --force >/dev/null", {
     allowFail: true,
   });
-
   await reportStaleServices(remote);
+}
+
+/**
+ * Switch infrastructure containers back to the images the last update
+ * replaced, for problems noticed after it finished.
+ */
+export async function rollbackUpdate(remote: Remote) {
+  const containers = await infraContainers(remote);
+  const targets: InfraContainer[] = [];
+  const sources = new Map<string, string>();
+  for (const container of containers) {
+    const id = await imageId(remote, previousRef(container.ref));
+    if (id && id !== container.imageId) {
+      targets.push(container);
+      sources.set(container.service, previousRef(container.ref));
+    }
+  }
+  if (targets.length === 0) {
+    done("nothing to roll back: no infrastructure image has a previous version");
+    return;
+  }
+
+  step(`rolling back ${targets.map((c) => c.service).join(", ")}`);
+  await switchImages(remote, targets, sources);
+  for (const { container } of targets) {
+    await waitForService(remote, container);
+  }
+  for (const { service } of targets) {
+    done(`${bold(service)} is running its previous image`);
+  }
+  warn(
+    "The next `portal update` will pull the newer images again; pin a version in the root compose.yaml to stay on these.",
+  );
 }
 
 /** List services whose deployed image is older than STALE_IMAGE_DAYS. */

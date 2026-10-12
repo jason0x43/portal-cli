@@ -104,6 +104,7 @@ The second form reads the value from stdin, so it stays out of shell history. `e
 ```bash
 portal ls
 portal update
+portal update --rollback
 portal status
 portal logs -f
 portal restart
@@ -112,7 +113,11 @@ portal remove
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
-- `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy), recreates only the containers whose image changed, and removes the replaced images. It doesn't touch services. CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old.
+- `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy) and recreates only the containers whose image changed.
+  - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
+  - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
+  - **Later rollback:** the images an update replaced are kept as `<image>:<tag>-previous`, and `portal update --rollback` switches back to them for problems noticed after the update finished.
+  - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old.
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
