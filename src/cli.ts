@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { deploy } from "./commands/deploy.ts";
 import { init } from "./commands/init.ts";
+import { update } from "./commands/update.ts";
 import {
   envList,
   envSet,
@@ -33,6 +34,7 @@ Usage: portal <command> [options]
 Commands:
   init                    Create a portal.toml for this project
   ls                      List every service on the server
+  update                  Update the shared infrastructure (cloudflared, caddy)
   deploy                  Build, upload, and start the service
   status                  Show the container, image tags, and route
   logs [-f] [-n N]        Show service logs
@@ -90,6 +92,24 @@ const options = {
   static: { type: "string" },
   force: { type: "boolean" },
 } as const;
+
+/**
+ * The server for commands that aren't about one service. Uses portal.toml's
+ * host and root if there is one, but doesn't need it.
+ */
+async function serverRemote(opts: {
+  config?: string;
+  host?: string;
+  root?: string;
+}): Promise<Remote> {
+  const config = existsSync(opts.config ?? CONFIG_FILE)
+    ? await loadConfig(opts.config)
+    : undefined;
+  return new Remote(
+    opts.host ?? config?.host ?? DEFAULT_HOST,
+    opts.root ?? config?.root ?? DEFAULT_ROOT,
+  );
+}
 
 async function main(argv: string[]) {
   const { values: opts, positionals } = parseArgs({
@@ -162,18 +182,11 @@ async function main(argv: string[]) {
       return remove(await target(), { purge: opts.purge, yes: opts.yes });
 
     case "ls":
-    case "list": {
-      // Uses portal.toml's host and root if there is one, but doesn't need it
-      const config = existsSync(opts.config ?? CONFIG_FILE)
-        ? await loadConfig(opts.config)
-        : undefined;
-      return list(
-        new Remote(
-          opts.host ?? config?.host ?? DEFAULT_HOST,
-          opts.root ?? config?.root ?? DEFAULT_ROOT,
-        ),
-      );
-    }
+    case "list":
+      return list(await serverRemote(opts));
+
+    case "update":
+      return update(await serverRemote(opts));
 
     default:
       throw new ConfigError(`unknown command "${command}" (see portal --help)`);

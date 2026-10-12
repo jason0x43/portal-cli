@@ -111,7 +111,7 @@ export async function waitForService(
   }
 
   console.error(dim(`--- last logs for ${name} ---`));
-  await serviceCompose(remote, name, `logs --no-color --tail 40`, {
+  await remote.exec(`docker logs --tail 40 ${q(name)}`, {
     inherit: true,
     allowFail: true,
   });

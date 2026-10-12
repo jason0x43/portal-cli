@@ -103,6 +103,7 @@ The second form reads the value from stdin, so it stays out of shell history. `e
 
 ```bash
 portal ls
+portal update
 portal status
 portal logs -f
 portal restart
@@ -111,6 +112,7 @@ portal remove
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
+- `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy), recreates only the containers whose image changed, and removes the replaced images. It doesn't touch services. CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old.
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
