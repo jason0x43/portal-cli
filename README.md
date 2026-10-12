@@ -1,6 +1,6 @@
 # portal
 
-Deploys Docker services to the `portal` server. The server layout this tool assumes is described in [PLAN.md](PLAN.md):
+Deploys Docker services to the `portal` server, which is set up like this:
 
 - traffic arrives through a Cloudflare tunnel
 - Caddy routes it, using `caddy/sites/*.caddy`
@@ -14,6 +14,12 @@ A project only needs a Dockerfile and a `portal.toml`. `portal deploy` takes car
 4. starts the container and waits for it to come up
 5. writes the Caddy route and reloads Caddy
 6. commits the change to the server's git repo
+
+portal expects the server config directory (`~/server` by default) to contain:
+
+- a root `compose.yaml` that `include:`s each service's `services/<name>/compose.yaml` and defines a `server` network
+- a `caddy` service on that network that loads `caddy/Caddyfile`, which imports `caddy/sites/*.caddy`
+- a git repo, if you want deploys committed (optional)
 
 ## Install
 
