@@ -107,16 +107,22 @@ export class Remote {
    * The argv for running `command` in the root directory. Over ssh, the command
    * goes to the user's login shell, which may not be POSIX (zsh, fish), so
    * it's wrapped in `sh -c` to get consistent globbing and word splitting.
+   *
+   * With a tty, Ctrl-C reaches the remote process group. The command is
+   * exec'd, so it must be a single simple command: otherwise sh is killed by
+   * the signal, and ssh reports that as exit 255, the same code as a
+   * connection failure. LogLevel=ERROR drops the "Shared connection closed"
+   * notice that ssh prints when a tty session ends.
    */
   sshArgv(command: string, tty = false): string[] {
-    const script = `cd ${qPath(this.root)} && ${command}`;
+    const script = `cd ${qPath(this.root)} && ${tty ? "exec " : ""}${command}`;
     if (this.isLocal) {
       return ["sh", "-c", script];
     }
     return [
       "ssh",
       ...this.sshOptions,
-      ...(tty ? ["-t"] : []),
+      ...(tty ? ["-t", "-o", "LogLevel=ERROR"] : []),
       this.host,
       `sh -c ${q(script)}`,
     ];

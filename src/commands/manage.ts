@@ -1,7 +1,7 @@
 import { imageRepo, servicePath } from "../compose.ts";
 import { formatValue, isValidKey, parseEnv, setVars, unsetVars } from "../dotenv.ts";
 import { DEPLOY_TAG_RE } from "../image.ts";
-import { q, type Remote } from "../remote.ts";
+import { CommandError, q, type Remote } from "../remote.ts";
 import {
   DeployError,
   envPath,
@@ -172,12 +172,16 @@ export async function logs(
   { follow = false, tail = "100" }: { follow?: boolean; tail?: string } = {},
 ) {
   await requireComposeService(target);
-  await serviceCompose(
-    target.remote,
-    target.name,
-    `logs --tail ${q(tail)}${follow ? " --follow" : ""}`,
-    { inherit: true, tty: follow && process.stdout.isTTY },
-  );
+  const command = `logs --tail ${q(tail)}${follow ? " --follow" : ""}`;
+  const result = await serviceCompose(target.remote, target.name, command, {
+    inherit: true,
+    tty: follow && process.stdout.isTTY,
+    allowFail: true,
+  });
+  // 130 is docker compose exiting on SIGINT: Ctrl-C is how --follow ends
+  if (result.code !== 0 && !(follow && result.code === 130)) {
+    throw new CommandError(`docker compose ${command}`, result.code, "");
+  }
 }
 
 export async function restart(target: Target) {

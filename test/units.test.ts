@@ -158,10 +158,17 @@ describe("Remote", () => {
   test("runs directly for the local host", () => {
     const remote = new Remote("local", "~/server");
     expect(remote.isLocal).toBe(true);
-    expect(remote.sshArgv("docker compose ps", true)).toEqual([
+    expect(remote.sshArgv("docker compose ps")).toEqual([
       "sh",
       "-c",
       "cd ~/server && docker compose ps",
     ]);
+  });
+
+  test("execs tty commands so Ctrl-C ends them cleanly", () => {
+    const argv = new Remote("portal", "~/server").sshArgv("docker compose logs -f", true);
+    expect(argv).toContain("-t");
+    expect(argv).toContain("LogLevel=ERROR");
+    expect(argv.at(-1)).toBe("sh -c 'cd ~/server && exec docker compose logs -f'");
   });
 });
