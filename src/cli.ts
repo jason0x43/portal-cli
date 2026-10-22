@@ -82,7 +82,8 @@ program
   .command("ls")
   .alias("list")
   .description("List every service on the server")
-  .action(async (_opts, cmd) => list(await serverRemote(cmd.optsWithGlobals())));
+  .option("--outdated", "check pinned and base images for newer versions")
+  .action(async (opts, cmd) => list(await serverRemote(cmd.optsWithGlobals()), opts));
 
 program
   .command("update")

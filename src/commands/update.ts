@@ -1,6 +1,4 @@
-import { BASE_IMAGE_LABEL, IMAGE_LABEL } from "../compose.ts";
-import { refTag } from "../image.ts";
-import { imageName, isVersioned, newerVersion } from "../registry.ts";
+import { checkVersions, describeCheck, isPinned, serviceImages } from "../outdated.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
@@ -298,60 +296,20 @@ export async function rollbackUpdate(remote: Remote) {
  * those only get the version check.
  */
 async function reportStaleServices(remote: Remote) {
-  const result = await remote.exec(
-    [
-      "for f in services/*/compose.yaml; do",
-      '  [ -e "$f" ] || continue',
-      '  n=${f#services/}; n=${n%/compose.yaml}',
-      `  printf '%s\\t%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)" "$(docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}' "portal/$n:latest" 2>/dev/null)"`,
-      "done; true",
-    ].join("\n"),
-  );
-  const now = Date.now();
-  const services = result.stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [name = "", created = "", source = "", base = ""] = line.split("\t");
-      // Docker reports nanoseconds; Date.parse only needs milliseconds
-      const createdAt = Date.parse(created.replace(/(\.\d{3})\d*/, "$1"));
-      const days = Math.floor((now - createdAt) / 86_400_000);
-      return {
-        name,
-        days,
-        pin: isVersioned(source) ? source : undefined,
-        base: isVersioned(base) ? base : undefined,
-      };
-    });
-
-  // Static sites share a base image, so ask about each image once
-  const lookups = new Map<string, Promise<string | undefined>>();
-  const lookup = (ref: string) => {
-    if (!lookups.has(ref)) {
-      lookups.set(ref, newerVersion(ref));
+  const services = await serviceImages(remote);
+  const checks = await checkVersions(services);
+  const newer: string[] = [];
+  const failed = new Set<string>();
+  for (const [name, results] of checks) {
+    for (const check of results) {
+      if (check.error && !failed.has(check.ref)) {
+        failed.add(check.ref);
+        warn(`couldn't check ${check.ref} for newer versions: ${check.error}`);
+      } else if (check.newer) {
+        newer.push(`${name} ${dim(`(${describeCheck(check)})`)}`);
+      }
     }
-    return lookups.get(ref)!;
-  };
-  const checks = services.flatMap(({ name, pin, base }) => [
-    ...(pin ? [{ name, ref: pin, describe: (v: string) => `${refTag(pin)} → ${v}` }] : []),
-    ...(base
-      ? [{ name, ref: base, describe: (v: string) => `${imageName(base)} ${refTag(base)} → ${v}` }]
-      : []),
-  ]);
-  const newer = (
-    await Promise.all(
-      checks.map(({ name, ref, describe }) =>
-        lookup(ref).then(
-          (version) => (version ? [`${name} ${dim(`(${describe(version)})`)}`] : []),
-          (err: unknown) => {
-            warn(`couldn't check ${ref} for newer versions: ${(err as Error).message}`);
-            return [];
-          },
-        ),
-      ),
-    )
-  ).flat();
+  }
   if (newer.length > 0) {
     warn("outdated images:");
     for (const line of newer) {
@@ -359,7 +317,7 @@ async function reportStaleServices(remote: Remote) {
     }
   }
 
-  const stale = services.filter(({ days, pin }) => !pin && days >= STALE_IMAGE_DAYS);
+  const stale = services.filter((s) => !isPinned(s) && s.days >= STALE_IMAGE_DAYS);
   if (stale.length > 0) {
     warn(
       `service images older than ${STALE_IMAGE_DAYS} days (redeploy them to pick up base image updates):`,

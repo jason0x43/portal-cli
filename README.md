@@ -116,6 +116,7 @@ portal doctor
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
+  - `--outdated` adds a column for each service's image: the version a pinned `image` is on, or the base image a built image names, with a newer version if the registry has one. Images with no base image label show as `unlabeled` (see [Base images](#base-images)). Like `update`, this only works for public images.
 - `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy) and recreates only the containers whose image changed.
   - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
   - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
