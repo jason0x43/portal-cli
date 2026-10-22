@@ -1,4 +1,5 @@
 import {
+  BASE_IMAGE_LABEL,
   imageRepo,
   renderService,
   renderSite,
@@ -7,6 +8,7 @@ import {
 } from "../compose.ts";
 import type { Config } from "../config.ts";
 import * as image from "../image.ts";
+import { isVersioned } from "../registry.ts";
 import { q, Remote } from "../remote.ts";
 import {
   DeployError,
@@ -81,6 +83,20 @@ async function deployContainer(
     step(`sending image to ${remote.host}`);
     await image.transfer(remote, `${repo}:${tag}`, step);
     await image.retag(remote, name, `${repo}:${tag}`, tag);
+  }
+
+  // Pinned third-party images are checked by their own version instead, and
+  // static site images always have the label
+  const pinned =
+    !options.image && config.source.kind === "image" && isVersioned(config.source.image);
+  if (
+    !pinned &&
+    config.source.kind !== "static" &&
+    !(await image.baseImage(remote, `${repo}:${tag}`))
+  ) {
+    warn(
+      `the image has no ${BASE_IMAGE_LABEL} label, so \`portal update\` can't check its base image for newer versions (run \`portal doctor --fix\` in the project to add it)`,
+    );
   }
 
   step("writing service config");

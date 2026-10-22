@@ -58,11 +58,16 @@ export function newestTag(current: string, tags: string[]): string | undefined {
   return best?.tag;
 }
 
-/** Registry host and repository path for an image reference. */
-export function repositoryOf(ref: string): { host: string; repository: string } {
+/** An image reference without its tag or digest, e.g. node:26-slim → node. */
+export function imageName(ref: string): string {
   const name = ref.split("@")[0]!;
   const tagAt = name.lastIndexOf(":");
-  const untagged = tagAt > name.lastIndexOf("/") ? name.slice(0, tagAt) : name;
+  return tagAt > name.lastIndexOf("/") ? name.slice(0, tagAt) : name;
+}
+
+/** Registry host and repository path for an image reference. */
+export function repositoryOf(ref: string): { host: string; repository: string } {
+  const untagged = imageName(ref);
   const registry = registryOf(ref);
   let repository = untagged.startsWith(`${registry}/`)
     ? untagged.slice(registry.length + 1)
@@ -131,6 +136,11 @@ export async function listRegistryTags(ref: string): Promise<string[]> {
     url = next ? new URL(next, url).href : undefined;
   }
   return tags;
+}
+
+/** Whether an image reference is pinned to a version tag that can be checked. */
+export function isVersioned(ref: string): boolean {
+  return parseVersion(refTag(ref) ?? "") !== undefined;
 }
 
 /** A newer version of a pinned image, if its registry has one. */

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { deploy } from "./commands/deploy.ts";
+import { doctor } from "./commands/doctor.ts";
 import { init } from "./commands/init.ts";
 import { rollbackUpdate, update } from "./commands/update.ts";
 import {
@@ -45,6 +46,8 @@ Commands:
   env unset KEY...        Remove variables
   rollback [TAG]          Switch back to the previous (or given) image
   remove [--purge]        Stop the service and remove its config
+  doctor [--fix]          Check the config, Dockerfile, server, and service,
+                          and with --fix label the Dockerfile's base image
 
 Options:
   -c, --config PATH       Config file (default: ./portal.toml)
@@ -89,6 +92,8 @@ const options = {
   // remove
   purge: { type: "boolean" },
   yes: { type: "boolean", short: "y" },
+  // doctor
+  fix: { type: "boolean" },
   // init
   name: { type: "string" },
   domain: { type: "string" },
@@ -193,6 +198,9 @@ async function main(argv: string[]) {
       return opts.rollback
         ? rollbackUpdate(await serverRemote(opts))
         : update(await serverRemote(opts));
+
+    case "doctor":
+      return doctor(opts);
 
     default:
       throw new ConfigError(`unknown command "${command}" (see portal --help)`);

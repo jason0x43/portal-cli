@@ -14,6 +14,12 @@ export function imageRepo(name: string): string {
  */
 export const IMAGE_LABEL = "portal.image";
 
+/**
+ * Standard OCI image label naming the image a build started from. Built
+ * service images should set it so `portal update` can check their base.
+ */
+export const BASE_IMAGE_LABEL = "org.opencontainers.image.base.name";
+
 export function servicePath(name: string): string {
   return `services/${name}/compose.yaml`;
 }
@@ -138,6 +144,7 @@ export function renderStaticDockerfile(config: Config): string {
 
   return [
     `FROM ${STATIC_SERVER_IMAGE}`,
+    `LABEL ${BASE_IMAGE_LABEL}=${JSON.stringify(STATIC_SERVER_IMAGE)}`,
     "COPY <<'TOML' /etc/static-web-server.toml",
     toml,
     "TOML",

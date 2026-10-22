@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { newestTag, repositoryOf } from "../src/registry.ts";
+import { imageName, newestTag, repositoryOf } from "../src/registry.ts";
 
 describe("newestTag", () => {
   const tags = [
@@ -29,6 +29,14 @@ describe("newestTag", () => {
   test("is undefined when the pin is current or not a version", () => {
     expect(newestTag("18.24.2", tags)).toBeUndefined();
     expect(newestTag("latest", tags)).toBeUndefined();
+  });
+});
+
+describe("imageName", () => {
+  test("drops the tag and digest", () => {
+    expect(imageName("node:26.10.0-slim")).toBe("node");
+    expect(imageName("localhost:5000/app:1.0@sha256:abc")).toBe("localhost:5000/app");
+    expect(imageName("localhost:5000/app")).toBe("localhost:5000/app");
   });
 });
 

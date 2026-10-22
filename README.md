@@ -112,6 +112,7 @@ portal logs -f
 portal restart
 portal rollback
 portal remove
+portal doctor
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
@@ -119,12 +120,21 @@ portal remove
   - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
   - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
   - **Later rollback:** the images an update replaced are kept as `<image>:<tag>-previous`, and `portal update --rollback` switches back to them for problems noticed after the update finished.
-  - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old. For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images.
+  - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old. For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images. Built images are checked the same way against the base image they name (see [Base images](#base-images)).
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
 - `rollback` switches to the previous image. `portal rollback <tag>` switches to a specific one.
 - `remove` stops the service and removes its config but keeps its data. Add `--purge` to delete the data too.
+- `doctor` checks that a project is ready to deploy and reports problems without changing anything. It exits with an error if anything would stop a deploy.
+  - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, the base is pinned to a version, and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
+  - **Static sites:** the directory exists, and so does the `fallback` page.
+  - **Local tools:** Docker and buildx are available to build with, and whether `docker pussh` is installed.
+  - **Pinned images:** the tag exists in its registry, and whether a newer one does.
+  - **CI workflows:** steps in the repository's GitHub workflows that use the portal action are on its newest release tag, pass the required inputs and an existing `config`, and grant `packages: read` when they rely on the job's token.
+  - **Server:** ssh and Docker work, caddy and cloudflared are running, and the `server` network exists.
+  - **Service:** no other site already routes its domains, the container is healthy, and the deployed image has a base image label.
+  - `--fix` adds or corrects the Dockerfile's base image label (see [Base images](#base-images)).
 
 These commands also work without a `portal.toml`, for example `portal status -s worthy`.
 
@@ -149,6 +159,21 @@ These commands also work without a `portal.toml`, for example `portal status -s 
     - A pattern without a `/` matches a file or directory name at any depth.
     - A pattern with a `/` matches from the site root.
     - Ignoring a directory leaves out everything in it.
+
+### Base images
+
+A built image should name the image it was built from in the standard `org.opencontainers.image.base.name` label, so `portal update` can report newer versions of it. Declare the base as an `ARG` so the `FROM` line and the label share one version:
+
+```dockerfile
+ARG BASE_IMAGE=node:26.10.0-slim
+FROM ${BASE_IMAGE} AS base
+# ...
+FROM base AS deploy
+ARG BASE_IMAGE
+LABEL org.opencontainers.image.base.name=${BASE_IMAGE}
+```
+
+The `LABEL` goes in the final stage, and that stage needs its own `ARG BASE_IMAGE` line to see the value. `portal doctor --fix` makes this change: it moves an inline base image into the `ARG`, or reuses the `ARG`s the `FROM` line already has, and corrects a label that doesn't match. `portal deploy` warns when a built image, or one deployed with `--image`, has no label. Static site images get the label automatically. Services pinned to a versioned `image` are checked by that version instead.
 
 ### CI
 

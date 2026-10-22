@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { imageRepo, renderStaticDockerfile } from "./compose.ts";
+import { BASE_IMAGE_LABEL, imageRepo, renderStaticDockerfile } from "./compose.ts";
 import { CONFIG_FILE, type Config } from "./config.ts";
 import { CommandError, q, run, type Remote } from "./remote.ts";
 
@@ -200,7 +200,7 @@ export async function pull(
 }
 
 /** Whether a docker CLI plugin is installed. (`docker <plugin> --help` exits 0 either way.) */
-async function hasPlugin(name: string): Promise<boolean> {
+export async function hasPlugin(name: string): Promise<boolean> {
   const result = await run(
     ["docker", "info", "--format", "{{range .ClientInfo.Plugins}}{{.Name}}\n{{end}}"],
     { allowFail: true },
@@ -221,6 +221,15 @@ export async function retag(
     cmds.unshift(`docker tag ${q(from)} ${q(`${repo}:${tag}`)}`);
   }
   await remote.exec(cmds.join(" && "));
+}
+
+/** The base image an image on the server names in its OCI base.name label. */
+export async function baseImage(remote: Remote, ref: string): Promise<string | undefined> {
+  const result = await remote.exec(
+    `docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}' ${q(ref)}`,
+    { allowFail: true },
+  );
+  return result.stdout.trim() || undefined;
 }
 
 /** Deploy tags of portal/<name> on the server, newest first. */

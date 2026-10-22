@@ -139,6 +139,7 @@ describe("static sites", () => {
     expect(renderStaticDockerfile(site("dist"))).toBe(
       [
         `FROM ${STATIC_SERVER_IMAGE}`,
+        `LABEL org.opencontainers.image.base.name="${STATIC_SERVER_IMAGE}"`,
         "COPY <<'TOML' /etc/static-web-server.toml",
         "[general]",
         "port = 8080",

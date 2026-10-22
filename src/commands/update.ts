@@ -1,6 +1,6 @@
-import { IMAGE_LABEL } from "../compose.ts";
+import { BASE_IMAGE_LABEL, IMAGE_LABEL } from "../compose.ts";
 import { refTag } from "../image.ts";
-import { newerVersion, parseVersion } from "../registry.ts";
+import { imageName, isVersioned, newerVersion } from "../registry.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
@@ -292,9 +292,10 @@ export async function rollbackUpdate(remote: Remote) {
 }
 
 /**
- * Report services pinned to an image version that has a newer release, and
- * other services whose image is older than STALE_IMAGE_DAYS. Redeploying a
- * pinned image gets the same image again, so those only get the first check.
+ * Report services whose pinned image, or the base image their image was built
+ * from, has a newer version, and other services whose image is older than
+ * STALE_IMAGE_DAYS. Redeploying a pinned image gets the same image again, so
+ * those only get the version check.
  */
 async function reportStaleServices(remote: Remote) {
   const result = await remote.exec(
@@ -302,7 +303,7 @@ async function reportStaleServices(remote: Remote) {
       "for f in services/*/compose.yaml; do",
       '  [ -e "$f" ] || continue',
       '  n=${f#services/}; n=${n%/compose.yaml}',
-      `  printf '%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)"`,
+      `  printf '%s\\t%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)" "$(docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}' "portal/$n:latest" 2>/dev/null)"`,
       "done; true",
     ].join("\n"),
   );
@@ -312,35 +313,49 @@ async function reportStaleServices(remote: Remote) {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [name = "", created = "", source = ""] = line.split("\t");
+      const [name = "", created = "", source = "", base = ""] = line.split("\t");
       // Docker reports nanoseconds; Date.parse only needs milliseconds
       const createdAt = Date.parse(created.replace(/(\.\d{3})\d*/, "$1"));
       const days = Math.floor((now - createdAt) / 86_400_000);
-      const pin = parseVersion(refTag(source) ?? "") ? source : undefined;
-      return { name, days, pin };
+      return {
+        name,
+        days,
+        pin: isVersioned(source) ? source : undefined,
+        base: isVersioned(base) ? base : undefined,
+      };
     });
 
+  // Static sites share a base image, so ask about each image once
+  const lookups = new Map<string, Promise<string | undefined>>();
+  const lookup = (ref: string) => {
+    if (!lookups.has(ref)) {
+      lookups.set(ref, newerVersion(ref));
+    }
+    return lookups.get(ref)!;
+  };
+  const checks = services.flatMap(({ name, pin, base }) => [
+    ...(pin ? [{ name, ref: pin, describe: (v: string) => `${refTag(pin)} → ${v}` }] : []),
+    ...(base
+      ? [{ name, ref: base, describe: (v: string) => `${imageName(base)} ${refTag(base)} → ${v}` }]
+      : []),
+  ]);
   const newer = (
     await Promise.all(
-      services.flatMap(({ name, pin }) =>
-        pin
-          ? [
-              newerVersion(pin).then(
-                (version) => (version ? [{ name, pin, version }] : []),
-                (err: unknown) => {
-                  warn(`couldn't check ${name} for newer versions: ${(err as Error).message}`);
-                  return [];
-                },
-              ),
-            ]
-          : [],
+      checks.map(({ name, ref, describe }) =>
+        lookup(ref).then(
+          (version) => (version ? [`${name} ${dim(`(${describe(version)})`)}`] : []),
+          (err: unknown) => {
+            warn(`couldn't check ${ref} for newer versions: ${(err as Error).message}`);
+            return [];
+          },
+        ),
       ),
     )
   ).flat();
   if (newer.length > 0) {
     warn("outdated images:");
-    for (const { name, pin, version } of newer) {
-      console.error(`  ${name} ${dim(`(${refTag(pin)} → ${version})`)}`);
+    for (const line of newer) {
+      console.error(`  ${line}`);
     }
   }
 
