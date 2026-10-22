@@ -17,7 +17,13 @@ import {
   type BaseAnalysis,
 } from "../dockerfile.ts";
 import { baseImage, hasPlugin, PLATFORM, refTag } from "../image.ts";
-import { isVersioned, listRegistryTags, newestTag, parseVersion } from "../registry.ts";
+import {
+  isVersioned,
+  listRegistryTags,
+  newerVersion,
+  newestTag,
+  parseVersion,
+} from "../registry.ts";
 import { q, Remote, run } from "../remote.ts";
 import { sitePath } from "../server.ts";
 import { cyan, dim, done, green, red, warn, yellow } from "../ui.ts";
@@ -190,6 +196,8 @@ async function checkDockerfile(
     report.warn(
       `base image ${base.value} isn't pinned to a version, so \`portal update\` can't check it for newer versions`,
     );
+  } else {
+    await checkBaseVersion(report, base.value);
   }
 
   if (base && base.missing.length === 0) {
@@ -221,6 +229,24 @@ async function checkDockerfile(
     );
   }
   return analysis;
+}
+
+async function checkBaseVersion(report: Report, ref: string) {
+  let newer: string | undefined;
+  try {
+    newer = await newerVersion(ref);
+  } catch (err) {
+    report.warn(`couldn't check base image ${ref} for newer versions: ${(err as Error).message}`);
+    return;
+  }
+  if (newer) {
+    report.warn(
+      `base image ${ref} has a newer version, ${newer}`,
+      "update the version in the Dockerfile and redeploy",
+    );
+  } else {
+    report.ok(`base image ${ref} is the newest version`);
+  }
 }
 
 function checkStaticDir(report: Report, config: Config) {

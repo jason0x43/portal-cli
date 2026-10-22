@@ -127,7 +127,7 @@ portal doctor
 - `rollback` switches to the previous image. `portal rollback <tag>` switches to a specific one.
 - `remove` stops the service and removes its config but keeps its data. Add `--purge` to delete the data too.
 - `doctor` checks that a project is ready to deploy and reports problems without changing anything. It exits with an error if anything would stop a deploy.
-  - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, the base is pinned to a version, and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
+  - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, the base is pinned to a version and that version is the newest, and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
   - **Static sites:** the directory exists, and so does the `fallback` page.
   - **Local tools:** Docker and buildx are available to build with, and whether `docker pussh` is installed.
   - **Pinned images:** the tag exists in its registry, and whether a newer one does.
