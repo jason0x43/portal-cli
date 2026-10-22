@@ -21,13 +21,16 @@ import { isVersioned, listRegistryTags, newestTag, parseVersion } from "../regis
 import { q, Remote, run } from "../remote.ts";
 import { sitePath } from "../server.ts";
 import { cyan, dim, done, green, red, warn, yellow } from "../ui.ts";
-import { ACTION_REPO, ACTION_REQUIRED_INPUTS, actionSteps } from "../workflow.ts";
+import { ACTION_REPO, ACTION_REQUIRED_INPUTS, actionSteps, updateActionRef } from "../workflow.ts";
 
 export interface DoctorOptions {
   config?: string;
   host?: string;
   root?: string;
-  /** Add or correct the Dockerfile's base image label */
+  /**
+   * Add or correct the Dockerfile's base image label, and move CI workflows to
+   * the newest release of portal's action
+   */
   fix?: boolean;
 }
 
@@ -97,7 +100,7 @@ export async function doctor(options: DoctorOptions = {}) {
     } else if (isVersioned(config.source.image)) {
       await checkPinnedImage(report, config.source.image);
     }
-    await checkWorkflows(report, config);
+    await checkWorkflows(report, config, options.fix ?? false);
   }
 
   const remote = new Remote(
@@ -307,23 +310,22 @@ async function latestActionTag(): Promise<string | undefined> {
 }
 
 /** Check the CI workflows that deploy with portal's action. */
-async function checkWorkflows(report: Report, config: Config) {
+async function checkWorkflows(report: Report, config: Config, fix: boolean) {
   const root = workflowRoot(config.dir);
   if (!root) {
     return;
   }
   const dir = join(root, ".github", "workflows");
   const files = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).sort();
-  const uses = (
-    await Promise.all(
-      files.map(async (file) =>
-        actionSteps(await Bun.file(join(dir, file)).text()).map((step) => ({
-          file: relative(process.cwd(), join(dir, file)),
-          ...step,
-        })),
-      ),
-    )
-  ).flat();
+  const workflows = await Promise.all(
+    files.map(async (file) => {
+      const path = join(dir, file);
+      return { path, name: relative(process.cwd(), path), text: await Bun.file(path).text() };
+    }),
+  );
+  const uses = workflows.flatMap(({ name, text }) =>
+    actionSteps(text).map((step) => ({ file: name, ...step })),
+  );
   if (uses.length === 0) {
     return;
   }
@@ -335,6 +337,18 @@ async function checkWorkflows(report: Report, config: Config) {
   } catch (err) {
     report.warn(`couldn't look up the newest portal action: ${(err as Error).message}`);
   }
+
+  const updated = new Set<string>();
+  if (fix && latest) {
+    for (const { path, name, text } of workflows) {
+      const fixed = updateActionRef(text, latest);
+      if (fixed !== text) {
+        await Bun.write(path, fixed);
+        updated.add(name);
+      }
+    }
+  }
+
   for (const { file, job, ref, inputs, readsPackages } of uses) {
     const where = `${file} (${job})`;
     if (!parseVersion(ref)) {
@@ -343,10 +357,14 @@ async function checkWorkflows(report: Report, config: Config) {
         latest ? `pin it to ${latest}` : undefined,
       );
     } else if (latest && newestTag(ref, [latest])) {
-      report.warn(
-        `${where} uses portal ${ref}; ${latest} is the newest`,
-        `change it to \`uses: ${ACTION_REPO}@${latest}\``,
-      );
+      if (updated.has(file)) {
+        report.ok(`${where} updated from portal ${ref} to ${latest}`);
+      } else {
+        report.warn(
+          `${where} uses portal ${ref}; ${latest} is the newest`,
+          "run `portal doctor --fix` to update it",
+        );
+      }
     } else {
       report.ok(`${where} uses portal ${ref}`);
     }

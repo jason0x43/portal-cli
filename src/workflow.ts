@@ -1,5 +1,6 @@
 import { parse } from "yaml";
 import { isRecord } from "./config.ts";
+import { newestTag } from "./registry.ts";
 
 /** The GitHub repository that publishes portal's deploy action. */
 export const ACTION_REPO = "jason0x43/portal-cli";
@@ -61,4 +62,17 @@ export function actionSteps(text: string): ActionStep[] {
     }
   }
   return steps;
+}
+
+/**
+ * Move steps that use an older release of portal's action to `ref`, editing
+ * the text so the rest of the workflow keeps its formatting. Steps on a
+ * branch or commit are left alone.
+ */
+export function updateActionRef(text: string, ref: string): string {
+  return text.replace(
+    new RegExp(`(\\buses:\\s*["']?${ACTION_REPO}@)([^\\s"'#]+)`, "gi"),
+    (match, uses: string, current: string) =>
+      newestTag(current, [ref]) ? `${uses}${ref}` : match,
+  );
 }

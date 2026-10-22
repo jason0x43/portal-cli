@@ -134,7 +134,7 @@ portal doctor
   - **CI workflows:** steps in the repository's GitHub workflows that use the portal action are on its newest release tag, pass the required inputs and an existing `config`, and grant `packages: read` when they rely on the job's token.
   - **Server:** ssh and Docker work, caddy and cloudflared are running, and the `server` network exists.
   - **Service:** no other site already routes its domains, the container is healthy, and the deployed image has a base image label.
-  - `--fix` adds or corrects the Dockerfile's base image label (see [Base images](#base-images)).
+  - `--fix` adds or corrects the Dockerfile's base image label (see [Base images](#base-images)), and moves workflow steps on an older release of the portal action to the newest one. Steps on a branch or commit are left alone.
 
 These commands also work without a `portal.toml`, for example `portal status -s worthy`.
 

@@ -181,7 +181,7 @@ program
 program
   .command("doctor")
   .description("Check the config, Dockerfile, server, and service")
-  .option("--fix", "add or correct the Dockerfile's base image label")
+  .option("--fix", "label the Dockerfile's base image and update the CI action")
   .action((_opts, cmd) => doctor(cmd.optsWithGlobals()));
 
 try {
