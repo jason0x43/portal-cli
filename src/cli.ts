@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { parseArgs } from "node:util";
+import { Command, InvalidArgumentError, Option } from "@commander-js/extra-typings";
 import { deploy } from "./commands/deploy.ts";
 import { doctor } from "./commands/doctor.ts";
 import { init } from "./commands/init.ts";
@@ -28,80 +28,6 @@ import { DeployError, resolveTarget } from "./server.ts";
 import { red } from "./ui.ts";
 import pkg from "../package.json";
 
-const HELP = `portal: deploy docker services to the portal server
-
-Usage: portal <command> [options]
-
-Commands:
-  init                    Create a portal.toml for this project
-  ls                      List every service on the server
-  update [--rollback]     Update the shared infrastructure (cloudflared, caddy),
-                          or switch back to the images the last update replaced
-  deploy                  Build, upload, and start the service
-  status                  Show the container, image tags, and route
-  logs [-f] [-n N]        Show service logs
-  restart                 Restart the service
-  env [list] [--show]     List server-side environment variables
-  env set KEY=VALUE...    Set variables (bare KEY reads the value from stdin)
-  env unset KEY...        Remove variables
-  rollback [TAG]          Switch back to the previous (or given) image
-  remove [--purge]        Stop the service and remove its config
-  doctor [--fix]          Check the config, Dockerfile, server, and service,
-                          and with --fix label the Dockerfile's base image
-
-Options:
-  -c, --config PATH       Config file (default: ./portal.toml)
-  -s, --service NAME      Act on a service without its portal.toml
-      --host HOST         ssh host (default: portal), or "local" to run on
-                          this machine (e.g. from a timer on the server)
-      --root PATH         Server config dir (default: ~/server)
-  -h, --help              Show this help
-
-deploy options:
-      --image REF         Deploy a prebuilt image instead of building
-      --registry-user U   Registry login user (default: $GITHUB_ACTOR)
-      --registry-token T  Registry login token (or $PORTAL_REGISTRY_TOKEN)
-      --timeout SECONDS   How long to wait for the container (default: 60)
-      --dry-run           Print the generated files without deploying
-
-init options:
-      --name, --domain, --port, --static DIR, --image REF, --force
-`;
-
-const options = {
-  config: { type: "string", short: "c" },
-  service: { type: "string", short: "s" },
-  host: { type: "string" },
-  root: { type: "string" },
-  help: { type: "boolean", short: "h" },
-  version: { type: "boolean", short: "v" },
-  // deploy
-  image: { type: "string" },
-  "registry-user": { type: "string" },
-  "registry-token": { type: "string" },
-  timeout: { type: "string" },
-  "dry-run": { type: "boolean" },
-  // env
-  show: { type: "boolean" },
-  "no-restart": { type: "boolean" },
-  // logs
-  follow: { type: "boolean", short: "f" },
-  tail: { type: "string", short: "n" },
-  // update
-  rollback: { type: "boolean" },
-  // remove
-  purge: { type: "boolean" },
-  yes: { type: "boolean", short: "y" },
-  // doctor
-  fix: { type: "boolean" },
-  // init
-  name: { type: "string" },
-  domain: { type: "string" },
-  port: { type: "string" },
-  static: { type: "string" },
-  force: { type: "boolean" },
-} as const;
-
 /**
  * The server for commands that aren't about one service. Uses portal.toml's
  * host and root if there is one, but doesn't need it.
@@ -120,101 +46,154 @@ async function serverRemote(opts: {
   );
 }
 
-async function main(argv: string[]) {
-  const { values: opts, positionals } = parseArgs({
-    args: argv,
-    options,
-    allowPositionals: true,
-  });
-  const [command, ...args] = positionals;
-
-  if (opts.version) {
-    console.log(pkg.version);
-    return;
+function positiveSeconds(value: string): number {
+  const seconds = Number(value);
+  if (!(seconds > 0)) {
+    throw new InvalidArgumentError("must be a positive number of seconds");
   }
-  if (opts.help || !command) {
-    console.log(HELP);
-    return;
-  }
-
-  const target = () => resolveTarget(opts);
-
-  switch (command) {
-    case "init":
-      return init(opts);
-
-    case "deploy": {
-      const config = await loadConfig(opts.config);
-      if (opts.host) config.host = opts.host;
-      if (opts.root) config.root = opts.root;
-      const timeout = opts.timeout ? Number(opts.timeout) : undefined;
-      if (timeout !== undefined && !(timeout > 0)) {
-        throw new ConfigError("--timeout must be a positive number of seconds");
-      }
-      return deploy(config, {
-        image: opts.image,
-        registryUser: opts["registry-user"],
-        registryToken: opts["registry-token"] ?? process.env.PORTAL_REGISTRY_TOKEN,
-        dryRun: opts["dry-run"],
-        timeout,
-      });
-    }
-
-    case "status":
-      return status(await target());
-
-    case "logs":
-      return logs(await target(), { follow: opts.follow, tail: opts.tail });
-
-    case "restart":
-      return restart(await target());
-
-    case "env": {
-      const [sub = "list", ...rest] = args;
-      const restartAfter = !opts["no-restart"];
-      if (sub === "list") {
-        return envList(await target(), { show: opts.show });
-      }
-      if (sub === "set") {
-        return envSet(await target(), rest, { restart: restartAfter });
-      }
-      if (sub === "unset") {
-        return envUnset(await target(), rest, { restart: restartAfter });
-      }
-      throw new ConfigError(`unknown env command "${sub}" (expected list, set, or unset)`);
-    }
-
-    case "rollback":
-      return rollback(await target(), args[0]);
-
-    case "remove":
-      return remove(await target(), { purge: opts.purge, yes: opts.yes });
-
-    case "ls":
-    case "list":
-      return list(await serverRemote(opts));
-
-    case "update":
-      return opts.rollback
-        ? rollbackUpdate(await serverRemote(opts))
-        : update(await serverRemote(opts));
-
-    case "doctor":
-      return doctor(opts);
-
-    default:
-      throw new ConfigError(`unknown command "${command}" (see portal --help)`);
-  }
+  return seconds;
 }
 
+const program = new Command()
+  .name("portal")
+  .description("Deploy docker services to the portal server")
+  .version(pkg.version, "-v, --version")
+  .option("-c, --config <path>", "config file (default: ./portal.toml)")
+  .option("-s, --service <name>", "act on a service without its portal.toml")
+  .option(
+    "--host <host>",
+    `ssh host (default: portal), or "local" to run on this machine (e.g. from a timer on the server)`,
+  )
+  .option("--root <path>", "server config dir (default: ~/server)")
+  .configureOutput({ outputError: (str, write) => write(red(str)) });
+
+program
+  .command("init")
+  .description("Create a portal.toml for this project")
+  .option("--name <name>", "service name")
+  .option("--domain <domain>", "domain to route to the service")
+  .option("--port <port>", "port the container listens on")
+  .option("--static <dir>", "serve a directory of static files")
+  .option("--image <ref>", "run a prebuilt image")
+  .option("--force", "overwrite an existing portal.toml")
+  .action((opts) => init(opts));
+
+program
+  .command("ls")
+  .alias("list")
+  .description("List every service on the server")
+  .action(async (_opts, cmd) => list(await serverRemote(cmd.optsWithGlobals())));
+
+program
+  .command("update")
+  .description("Update the shared infrastructure (cloudflared, caddy)")
+  .option("--rollback", "switch back to the images the last update replaced")
+  .action(async (opts, cmd) => {
+    const remote = await serverRemote(cmd.optsWithGlobals());
+    return opts.rollback ? rollbackUpdate(remote) : update(remote);
+  });
+
+program
+  .command("deploy")
+  .description("Build, upload, and start the service")
+  .option("--image <ref>", "deploy a prebuilt image instead of building")
+  .option("--registry-user <user>", "registry login user (default: $GITHUB_ACTOR)")
+  .addOption(
+    new Option("--registry-token <token>", "registry login token").env(
+      "PORTAL_REGISTRY_TOKEN",
+    ),
+  )
+  .option(
+    "--timeout <seconds>",
+    "how long to wait for the container (default: 60)",
+    positiveSeconds,
+  )
+  .option("--dry-run", "print the generated files without deploying")
+  .action(async (opts, cmd) => {
+    const globals = cmd.optsWithGlobals();
+    const config = await loadConfig(globals.config);
+    const { host, root } = globals;
+    if (host) config.host = host;
+    if (root) config.root = root;
+    return deploy(config, opts);
+  });
+
+program
+  .command("status")
+  .description("Show the container, image tags, and route")
+  .action(async (_opts, cmd) => status(await resolveTarget(cmd.optsWithGlobals())));
+
+program
+  .command("logs")
+  .description("Show service logs")
+  .option("-f, --follow", "follow log output")
+  .option("-n, --tail <lines>", "number of lines to show (default: 100)")
+  .action(async (opts, cmd) => logs(await resolveTarget(cmd.optsWithGlobals()), opts));
+
+program
+  .command("restart")
+  .description("Restart the service")
+  .action(async (_opts, cmd) => restart(await resolveTarget(cmd.optsWithGlobals())));
+
+const env = program
+  .command("env")
+  .description("Manage the service's server-side environment variables");
+
+env
+  .command("list", { isDefault: true })
+  .description("List the variables")
+  .option("--show", "show values, not just names")
+  .action(async (opts, cmd) => envList(await resolveTarget(cmd.optsWithGlobals()), opts));
+
+env
+  .command("set")
+  .description("Set variables (a bare KEY reads the value from stdin)")
+  .usage("[options] KEY=VALUE... (or KEY with the value on stdin)")
+  .argument("<assignments...>", "KEY=VALUE or KEY")
+  .option("--no-restart", "don't restart the service")
+  .action(async (assignments, opts, cmd) =>
+    envSet(await resolveTarget(cmd.optsWithGlobals()), assignments, opts),
+  );
+
+env
+  .command("unset")
+  .description("Remove variables")
+  .usage("[options] KEY...")
+  .argument("<keys...>")
+  .option("--no-restart", "don't restart the service")
+  .action(async (keys, opts, cmd) =>
+    envUnset(await resolveTarget(cmd.optsWithGlobals()), keys, opts),
+  );
+
+program
+  .command("rollback")
+  .description("Switch back to the previous (or given) image")
+  .argument("[tag]")
+  .action(async (tag, _opts, cmd) => rollback(await resolveTarget(cmd.optsWithGlobals()), tag));
+
+program
+  .command("remove")
+  .description("Stop the service and remove its config")
+  .option("--purge", "also remove its data and .env")
+  .option("-y, --yes", "don't ask for confirmation")
+  .action(async (opts, cmd) => remove(await resolveTarget(cmd.optsWithGlobals()), opts));
+
+program
+  .command("doctor")
+  .description("Check the config, Dockerfile, server, and service")
+  .option("--fix", "add or correct the Dockerfile's base image label")
+  .action((_opts, cmd) => doctor(cmd.optsWithGlobals()));
+
 try {
-  await main(process.argv.slice(2));
+  if (process.argv.length <= 2) {
+    program.help();
+  }
+  await program.parseAsync();
 } catch (err) {
   const known =
     err instanceof ConfigError ||
     err instanceof DeployError ||
-    err instanceof CommandError ||
-    (err as { code?: string }).code?.startsWith("ERR_PARSE_ARGS");
+    err instanceof CommandError;
   console.error(red(`error: ${known ? (err as Error).message : String((err as Error).stack ?? err)}`));
   process.exit(1);
 }

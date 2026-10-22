@@ -13,6 +13,8 @@
     "build:linux": "bun build --compile --minify --target=bun-linux-x64 src/cli.ts --outfile dist/portal-linux-x64"
   },
   "dependencies": {
+    "@commander-js/extra-typings": "15.0.0",
+    "commander": "15.0.0",
     "yaml": "2.9.1"
   },
   "devDependencies": {

@@ -47,9 +47,6 @@ export async function envSet(
   assignments: string[],
   { restart = true } = {},
 ) {
-  if (assignments.length === 0) {
-    throw new DeployError("usage: portal env set KEY=VALUE... (or KEY with the value on stdin)");
-  }
   if (assignments.length > 1 && assignments.some((a) => !a.includes("="))) {
     throw new DeployError("a value can only be read from stdin when setting one variable");
   }
