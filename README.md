@@ -182,7 +182,7 @@ This repo is also a GitHub Action. A workflow builds and pushes its image as usu
 ```yaml
 - uses: actions/checkout@v7 # the action reads portal.toml from the repo
 # ... build and push ghcr.io/owner/app:sha-<commit> ...
-- uses: jason0x43/portal-cli@v0.2.0
+- uses: jason0x43/portal-cli@v0.6.0
   with:
     config: portal.toml
     image: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
