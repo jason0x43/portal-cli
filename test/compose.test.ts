@@ -109,6 +109,17 @@ describe("renderService", () => {
     expect(service.read_only).toBe(true);
     expect(service.tmpfs).toEqual(["/tmp"]);
   });
+
+  test("labels image services with their configured image", () => {
+    const config = parseConfig(
+      { name: "app", domain: "app.tmpdir.dev", port: 80, image: "nginx:1.27" },
+      "/p",
+    );
+    expect(parse(renderService(config)).services.app.labels).toEqual({
+      "portal.image": "nginx:1.27",
+    });
+    expect(parse(renderService(worthy)).services.worthy.labels).toBeUndefined();
+  });
 });
 
 describe("static sites", () => {

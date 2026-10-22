@@ -1,3 +1,6 @@
+import { IMAGE_LABEL } from "../compose.ts";
+import { refTag } from "../image.ts";
+import { newerVersion, parseVersion } from "../registry.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
@@ -141,8 +144,8 @@ async function switchImages(
  * and recreate the containers whose image changed. If a container doesn't
  * come up, or any site's response status changes, the previous images are put
  * back. Services aren't touched: CI redeploys registry-built apps, and locally
- * built ones need `portal deploy`, so this only reports which service images
- * are getting old.
+ * built ones need `portal deploy`, so this only reports which pinned images
+ * have newer versions and which other service images are getting old.
  */
 export async function update(remote: Remote) {
   const containers = await infraContainers(remote);
@@ -288,31 +291,60 @@ export async function rollbackUpdate(remote: Remote) {
   );
 }
 
-/** List services whose deployed image is older than STALE_IMAGE_DAYS. */
+/**
+ * Report services pinned to an image version that has a newer release, and
+ * other services whose image is older than STALE_IMAGE_DAYS. Redeploying a
+ * pinned image gets the same image again, so those only get the first check.
+ */
 async function reportStaleServices(remote: Remote) {
   const result = await remote.exec(
     [
       "for f in services/*/compose.yaml; do",
       '  [ -e "$f" ] || continue',
       '  n=${f#services/}; n=${n%/compose.yaml}',
-      `  printf '%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)"`,
+      `  printf '%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)"`,
       "done; true",
     ].join("\n"),
   );
   const now = Date.now();
-  const stale = result.stdout
+  const services = result.stdout
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [name = "", created = ""] = line.split("\t");
+      const [name = "", created = "", source = ""] = line.split("\t");
       // Docker reports nanoseconds; Date.parse only needs milliseconds
       const createdAt = Date.parse(created.replace(/(\.\d{3})\d*/, "$1"));
       const days = Math.floor((now - createdAt) / 86_400_000);
-      return { name, days };
-    })
-    .filter(({ days }) => days >= STALE_IMAGE_DAYS);
+      const pin = parseVersion(refTag(source) ?? "") ? source : undefined;
+      return { name, days, pin };
+    });
 
+  const newer = (
+    await Promise.all(
+      services.flatMap(({ name, pin }) =>
+        pin
+          ? [
+              newerVersion(pin).then(
+                (version) => (version ? [{ name, pin, version }] : []),
+                (err: unknown) => {
+                  warn(`couldn't check ${name} for newer versions: ${(err as Error).message}`);
+                  return [];
+                },
+              ),
+            ]
+          : [],
+      ),
+    )
+  ).flat();
+  if (newer.length > 0) {
+    warn("outdated images:");
+    for (const { name, pin, version } of newer) {
+      console.error(`  ${name} ${dim(`(${refTag(pin)} → ${version})`)}`);
+    }
+  }
+
+  const stale = services.filter(({ days, pin }) => !pin && days >= STALE_IMAGE_DAYS);
   if (stale.length > 0) {
     warn(
       `service images older than ${STALE_IMAGE_DAYS} days (redeploy them to pick up base image updates):`,

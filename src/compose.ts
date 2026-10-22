@@ -8,6 +8,12 @@ export function imageRepo(name: string): string {
   return `portal/${name}`;
 }
 
+/**
+ * Container label holding the configured image reference, since the image
+ * itself only keeps its portal/<name> tags once it's retagged.
+ */
+export const IMAGE_LABEL = "portal.image";
+
 export function servicePath(name: string): string {
   return `services/${name}/compose.yaml`;
 }
@@ -34,6 +40,10 @@ export function renderService(config: Config): string {
     // The local driver rotates and compresses logs (5 x 20MB by default).
     // The default json-file driver grows without limit.
     logging: { driver: "local" },
+    // Lets `portal update` look for newer versions of a pinned image
+    ...(config.source.kind === "image" && {
+      labels: { [IMAGE_LABEL]: config.source.image },
+    }),
   };
 
   const service = deepMerge(base, config.compose);
