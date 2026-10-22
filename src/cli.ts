@@ -3,6 +3,7 @@ import { Command, InvalidArgumentError, Option } from "@commander-js/extra-typin
 import { deploy } from "./commands/deploy.ts";
 import { doctor } from "./commands/doctor.ts";
 import { init } from "./commands/init.ts";
+import { labels } from "./commands/labels.ts";
 import { rollbackUpdate, update } from "./commands/update.ts";
 import {
   envList,
@@ -178,6 +179,11 @@ program
   .option("--purge", "also remove its data and .env")
   .option("-y, --yes", "don't ask for confirmation")
   .action(async (opts, cmd) => remove(await resolveTarget(cmd.optsWithGlobals()), opts));
+
+program
+  .command("labels")
+  .description("Print the labels portal adds to images it builds, for a build done elsewhere such as in CI")
+  .action(async (_opts, cmd) => labels(await loadConfig(cmd.optsWithGlobals().config)));
 
 program
   .command("doctor")

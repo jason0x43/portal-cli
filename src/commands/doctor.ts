@@ -1,6 +1,12 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { BASE_IMAGE_LABEL, imageRepo, NETWORK, servicePath } from "../compose.ts";
+import {
+  BASE_DIGEST_LABEL,
+  BASE_IMAGE_LABEL,
+  imageRepo,
+  NETWORK,
+  servicePath,
+} from "../compose.ts";
 import {
   CONFIG_FILE,
   ConfigError,
@@ -13,11 +19,13 @@ import {
   addBaseLabel,
   analyzeBase,
   DockerfileError,
+  dockerfilePath,
   labelMatches,
   type BaseAnalysis,
 } from "../dockerfile.ts";
-import { baseImage, hasPlugin, PLATFORM, refTag } from "../image.ts";
+import { baseImage, hasPlugin, imageLabel, PLATFORM, refTag } from "../image.ts";
 import {
+  imageDigest,
   isVersioned,
   listRegistryTags,
   newerVersion,
@@ -130,20 +138,6 @@ export async function doctor(options: DoctorOptions = {}) {
   }
 }
 
-/**
- * The Dockerfile a service is built from: the configured one for `build`, or
- * one in the project for `image` services built elsewhere, such as in CI.
- */
-function dockerfilePath(config: Config): string | undefined {
-  if (config.source.kind === "build") {
-    return resolve(config.dir, config.source.context, config.source.dockerfile);
-  }
-  if (config.source.kind === "image") {
-    const path = join(config.dir, "Dockerfile");
-    return existsSync(path) ? path : undefined;
-  }
-}
-
 async function checkDockerfile(
   report: Report,
   config: Config,
@@ -191,6 +185,10 @@ async function checkDockerfile(
   } else if (base.missing.length > 0) {
     report.warn(
       `base image ${base.expression} uses ${base.missing.join(", ")}, which has no default`,
+    );
+  } else if (!isVersioned(base.value) && config.source.kind === "build") {
+    report.ok(
+      `base image ${base.value} isn't a version, so deploys record its digest to notice when it's rebuilt`,
     );
   } else if (!isVersioned(base.value)) {
     report.warn(
@@ -496,20 +494,54 @@ async function checkService(
     report.warn(`container is ${state || "missing"}`, "see `portal status` and `portal logs`");
   }
 
-  // Pinned images are checked by their own version, static sites always have
-  // the label, and a project without a Dockerfile can't add one
-  if (config.source.kind === "static" || !analysis?.base) {
+  // Pinned images are checked by their own version, and a project without a
+  // Dockerfile can't add the labels
+  if (config.source.kind !== "static" && !analysis?.base) {
     return;
   }
-  const deployedBase = await baseImage(remote, `${imageRepo(name)}:latest`);
-  if (deployedBase) {
-    report.ok(`deployed image is built from ${deployedBase}`);
-  } else {
+  const ref = `${imageRepo(name)}:latest`;
+  const deployedBase = await baseImage(remote, ref);
+  if (!deployedBase) {
     report.warn(
       "deployed image has no base image label",
-      labelMatches(analysis)
-        ? "the Dockerfile has one now, so the next deploy adds it"
+      config.source.kind === "static" || (analysis && labelMatches(analysis))
+        ? "the next deploy adds it"
         : undefined,
+    );
+    return;
+  }
+  if (config.source.kind !== "static") {
+    report.ok(`deployed image is built from ${deployedBase}`);
+  }
+  // A base pinned to a digest can't be rebuilt
+  if (deployedBase.includes("@")) {
+    return;
+  }
+
+  const builtElsewhere = config.source.kind === "image";
+  const digest = await imageLabel(remote, ref, BASE_DIGEST_LABEL);
+  if (!digest) {
+    report.warn(
+      `deployed image has no ${BASE_DIGEST_LABEL} label, so rebuilds of ${deployedBase} won't be noticed`,
+      builtElsewhere
+        ? `pass the labels from ${ACTION_REPO}/labels to the CI build (see the README)`
+        : "the next deploy adds it",
+    );
+    return;
+  }
+  let current: string;
+  try {
+    current = await imageDigest(deployedBase, PLATFORM);
+  } catch (err) {
+    report.warn(`couldn't check whether ${deployedBase} was rebuilt: ${(err as Error).message}`);
+    return;
+  }
+  if (current === digest) {
+    report.ok(`${deployedBase} hasn't been rebuilt since the deployed image was built`);
+  } else {
+    report.warn(
+      `${deployedBase} has been rebuilt since the deployed image was built`,
+      builtElsewhere ? "rerun the CI build to pick it up" : "redeploy to pick it up",
     );
   }
 }

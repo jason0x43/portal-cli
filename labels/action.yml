@@ -1,0 +1,40 @@
+name: portal labels
+description: >
+  Print the labels portal adds to images it builds, such as the digest of the
+  base image, for a build done in CI. Pass the output to
+  docker/build-push-action's labels input.
+
+inputs:
+  config:
+    description: Path to the service's portal.toml, relative to the workspace
+    default: portal.toml
+
+outputs:
+  labels:
+    description: key=value labels, one per line
+    value: ${{ steps.labels.outputs.labels }}
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.3
+
+    - name: Install portal
+      shell: bash
+      working-directory: ${{ github.action_path }}/..
+      run: bun install --frozen-lockfile --production
+
+    - name: Get labels
+      id: labels
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+        NO_COLOR: "1"
+      run: |
+        {
+          echo "labels<<PORTAL_LABELS"
+          bun "$GITHUB_ACTION_PATH/../src/cli.ts" labels --config "$CONFIG"
+          echo "PORTAL_LABELS"
+        } >> "$GITHUB_OUTPUT"

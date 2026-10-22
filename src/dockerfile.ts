@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { BASE_IMAGE_LABEL } from "./compose.ts";
+import type { Config } from "./config.ts";
 
 /** ARG that `addBaseLabel` introduces when the base image is written inline. */
 export const BASE_IMAGE_ARG = "BASE_IMAGE";
@@ -346,4 +349,18 @@ export function addBaseLabel(
     throw new DockerfileError("couldn't add a label that matches the base image");
   }
   return fixed;
+}
+
+/**
+ * The Dockerfile a service is built from: the configured one for `build`, or
+ * one in the project for `image` services built elsewhere, such as in CI.
+ */
+export function dockerfilePath(config: Config): string | undefined {
+  if (config.source.kind === "build") {
+    return resolve(config.dir, config.source.context, config.source.dockerfile);
+  }
+  if (config.source.kind === "image") {
+    const path = join(config.dir, "Dockerfile");
+    return existsSync(path) ? path : undefined;
+  }
 }

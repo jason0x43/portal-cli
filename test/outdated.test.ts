@@ -21,6 +21,17 @@ describe("versionChecks", () => {
       versionChecks({ name: "app", days: 3, source: "ghcr.io/me/app:latest", base: "node:lts" }),
     ).toEqual([]);
   });
+
+  test("checks an unversioned base by the digest it was built from", () => {
+    expect(
+      versionChecks({
+        name: "app",
+        days: 3,
+        base: "debian:trixie-slim",
+        baseDigest: "sha256:aaa",
+      }),
+    ).toEqual([{ kind: "base", ref: "debian:trixie-slim", digest: "sha256:aaa" }]);
+  });
 });
 
 describe("describeCheck", () => {
@@ -31,6 +42,18 @@ describe("describeCheck", () => {
     expect(describeCheck({ kind: "pin", ref: "ghcr.io/atuinsh/atuin:18.23.0" })).toBe(
       "pinned 18.23.0",
     );
+  });
+
+  test("notes a base whose tag was rebuilt, unless there's a newer version", () => {
+    const base = { kind: "base" as const, ref: "debian:trixie-slim", digest: "sha256:aaa" };
+    expect(describeCheck({ ...base, rebuilt: true })).toBe(
+      "debian trixie-slim (rebuilt upstream)",
+    );
+    expect(describeCheck({ ...base, rebuilt: false })).toBe("debian trixie-slim");
+    expect(
+      describeCheck({ kind: "base", ref: "node:26.1.0-slim", newer: "26.12.1-slim", rebuilt: true }),
+    ).toBe("node 26.1.0-slim → 26.12.1-slim");
+    expect(describeCheck({ kind: "base", ref: "debian" })).toBe("debian latest");
   });
 });
 
@@ -57,6 +80,9 @@ describe("outdatedSummary", () => {
     expect(outdatedSummary(pinned, [pin, { ...base, newer: "12.9-slim" }])).toBe(
       "pinned 18.23.0, debian 12.8-slim → 12.9-slim",
     );
+    expect(outdatedSummary(pinned, [pin, { ...base, rebuilt: true }])).toBe(
+      "pinned 18.23.0, debian 12.8-slim (rebuilt upstream)",
+    );
   });
 
   test("flags images without a base image label", () => {
@@ -65,7 +91,7 @@ describe("outdatedSummary", () => {
       "unlabeled",
     );
     expect(outdatedSummary({ name: "app", days: 3, base: "node:lts" }, [])).toBe(
-      "node:lts (not a version)",
+      "node:lts (no version or digest)",
     );
   });
 

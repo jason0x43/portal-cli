@@ -1,4 +1,10 @@
-import { checkVersions, describeCheck, isPinned, serviceImages } from "../outdated.ts";
+import {
+  checkVersions,
+  describeCheck,
+  isOutdated,
+  isPinned,
+  serviceImages,
+} from "../outdated.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
@@ -291,9 +297,9 @@ export async function rollbackUpdate(remote: Remote) {
 
 /**
  * Report services whose pinned image, or the base image their image was built
- * from, has a newer version, and other services whose image is older than
- * STALE_IMAGE_DAYS. Redeploying a pinned image gets the same image again, so
- * those only get the version check.
+ * from, has a newer version or has been rebuilt under the same tag, and other
+ * services whose image is older than STALE_IMAGE_DAYS. Redeploying a pinned
+ * image gets the same image again, so those only get the version check.
  */
 async function reportStaleServices(remote: Remote) {
   const services = await serviceImages(remote);
@@ -305,7 +311,7 @@ async function reportStaleServices(remote: Remote) {
       if (check.error && !failed.has(check.ref)) {
         failed.add(check.ref);
         warn(`couldn't check ${check.ref} for newer versions: ${check.error}`);
-      } else if (check.newer) {
+      } else if (isOutdated(check)) {
         newer.push(`${name} ${dim(`(${describeCheck(check)})`)}`);
       }
     }
@@ -317,7 +323,11 @@ async function reportStaleServices(remote: Remote) {
     }
   }
 
-  const stale = services.filter((s) => !isPinned(s) && s.days >= STALE_IMAGE_DAYS);
+  // A recorded base digest is checked directly, so age is only a guess for
+  // the rest
+  const stale = services.filter(
+    (s) => !isPinned(s) && !s.baseDigest && s.days >= STALE_IMAGE_DAYS,
+  );
   if (stale.length > 0) {
     warn(
       `service images older than ${STALE_IMAGE_DAYS} days (redeploy them to pick up base image updates):`,

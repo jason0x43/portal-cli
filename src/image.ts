@@ -24,6 +24,16 @@ export function deployTag(suffix: string | undefined, now = new Date()): string 
   return suffix ? `${stamp}-${suffix}` : stamp;
 }
 
+/** When a deploy tag was made, from the timestamp it starts with. */
+export function deployedAt(tag: string): Date | undefined {
+  const match = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(-|$)/.exec(tag);
+  if (!match) {
+    return;
+  }
+  const [, year, month, day, hour, minute, second] = match;
+  return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+}
+
 /** The git commit being deployed, marked dirty if there are uncommitted changes. */
 export async function sourceRevision(dir: string): Promise<string | undefined> {
   const head = await run(["git", "-C", dir, "rev-parse", "--short=12", "HEAD"], {
@@ -39,12 +49,26 @@ export async function sourceRevision(dir: string): Promise<string | undefined> {
 
 /**
  * Build the image locally for the server's platform. Static sites use a
- * generated Dockerfile with the static directory as the build context.
+ * generated Dockerfile with the static directory as the build context. Base
+ * images are always pulled, so a rebuilt tag isn't served from a local copy.
  */
-export async function build(config: Config, tag: string): Promise<void> {
+export async function build(
+  config: Config,
+  tag: string,
+  labels: Record<string, string> = {},
+): Promise<void> {
   const repo = imageRepo(config.name);
   const tags = ["--tag", `${repo}:${tag}`, "--tag", `${repo}:latest`];
-  const base = ["docker", "buildx", "build", "--platform", PLATFORM, "--load"];
+  const base = [
+    "docker",
+    "buildx",
+    "build",
+    "--platform",
+    PLATFORM,
+    "--load",
+    "--pull",
+    ...Object.entries(labels).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
+  ];
 
   if (config.source.kind === "static") {
     const siteDir = resolve(config.dir, config.source.dir);
@@ -213,13 +237,22 @@ export async function retag(
   await remote.exec(cmds.join(" && "));
 }
 
-/** The base image an image on the server names in its OCI base.name label. */
-export async function baseImage(remote: Remote, ref: string): Promise<string | undefined> {
+/** A label of an image on the server. */
+export async function imageLabel(
+  remote: Remote,
+  ref: string,
+  label: string,
+): Promise<string | undefined> {
   const result = await remote.exec(
-    `docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}' ${q(ref)}`,
+    `docker image inspect --format '{{index .Config.Labels "${label}"}}' ${q(ref)}`,
     { allowFail: true },
   );
   return result.stdout.trim() || undefined;
+}
+
+/** The base image an image on the server names in its OCI base.name label. */
+export function baseImage(remote: Remote, ref: string): Promise<string | undefined> {
+  return imageLabel(remote, ref, BASE_IMAGE_LABEL);
 }
 
 /** Deploy tags of portal/<name> on the server, newest first. */

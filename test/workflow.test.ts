@@ -67,11 +67,13 @@ describe("updateActionRef", () => {
         with:
           image: ghcr.io/owner/app:sha-abc
       - uses: "Jason0x43/Portal-CLI@v0.4.1"
+      - uses: jason0x43/portal-cli/labels@v0.5.0
 `;
     expect(updateActionRef(workflow, "v0.6.0")).toBe(
       workflow
         .replace("portal-cli@v0.5.0", "portal-cli@v0.6.0")
-        .replace("Portal-CLI@v0.4.1", "Portal-CLI@v0.6.0"),
+        .replace("Portal-CLI@v0.4.1", "Portal-CLI@v0.6.0")
+        .replace("labels@v0.5.0", "labels@v0.6.0"),
     );
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatValue, parseEnv, setVars, unsetVars } from "../src/dotenv.ts";
-import { DEPLOY_TAG_RE, deployTag, refTag, registryOf, stageStaticSite } from "../src/image.ts";
+import { DEPLOY_TAG_RE, deployedAt, deployTag, refTag, registryOf, stageStaticSite } from "../src/image.ts";
 import { q, qPath, Remote } from "../src/remote.ts";
 
 describe("dotenv", () => {
@@ -80,6 +80,13 @@ describe("deploy tags", () => {
     expect(DEPLOY_TAG_RE.test(a) && DEPLOY_TAG_RE.test(b)).toBe(true);
     expect(DEPLOY_TAG_RE.test("latest")).toBe(false);
     expect(DEPLOY_TAG_RE.test("build-20261011-203412")).toBe(false);
+  });
+
+  test("reads the time back out of a deploy tag", () => {
+    const at = new Date("2026-10-11T20:34:12Z");
+    expect(deployedAt(deployTag("abc123", at))).toEqual(at);
+    expect(deployedAt(deployTag(undefined, at))).toEqual(at);
+    expect(deployedAt("latest")).toBeUndefined();
   });
 });
 

@@ -65,13 +65,13 @@ export function actionSteps(text: string): ActionStep[] {
 }
 
 /**
- * Move steps that use an older release of portal's action to `ref`, editing
- * the text so the rest of the workflow keeps its formatting. Steps on a
- * branch or commit are left alone.
+ * Move steps that use an older release of portal's action, or of its labels
+ * action, to `ref`, editing the text so the rest of the workflow keeps its
+ * formatting. Steps on a branch or commit are left alone.
  */
 export function updateActionRef(text: string, ref: string): string {
   return text.replace(
-    new RegExp(`(\\buses:\\s*["']?${ACTION_REPO}@)([^\\s"'#]+)`, "gi"),
+    new RegExp(`(\\buses:\\s*["']?${ACTION_REPO}(?:/labels)?@)([^\\s"'#]+)`, "gi"),
     (match, uses: string, current: string) =>
       newestTag(current, [ref]) ? `${uses}${ref}` : match,
   );

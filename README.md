@@ -116,25 +116,26 @@ portal doctor
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
-  - `--outdated` adds a column for each service's image: the version a pinned `image` is on, or the base image a built image names, with a newer version if the registry has one. Images with no base image label show as `unlabeled` (see [Base images](#base-images)). Like `update`, this only works for public images.
+  - `--outdated` adds a column for each service's image: the version a pinned `image` is on, or the base image a built image names, with a newer version if the registry has one, or `(rebuilt upstream)` if its tag now points to a different image than the one it was built from. Images with no base image label show as `unlabeled` (see [Base images](#base-images)). Like `update`, this only works for public images.
 - `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy) and recreates only the containers whose image changed.
   - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
   - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
   - **Later rollback:** the images an update replaced are kept as `<image>:<tag>-previous`, and `portal update --rollback` switches back to them for problems noticed after the update finished.
-  - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service whose image is more than 30 days old. For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images. Built images are checked the same way against the base image they name (see [Base images](#base-images)).
+  - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service that was last deployed more than 30 days ago, unless it can check the image's base digest (see [Base images](#base-images)). For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images. Built images are checked the same way against the base image they name, and against the digest that base had when they were built (see [Base images](#base-images)).
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
 - `rollback` switches to the previous image. `portal rollback <tag>` switches to a specific one.
 - `remove` stops the service and removes its config but keeps its data. Add `--purge` to delete the data too.
+- `labels` prints the labels portal adds to images it builds, one `key=value` per line, for a build done elsewhere (see [CI](#ci)). Right now that's the base image's digest. A label it can't work out is left out with a warning, so the build still runs.
 - `doctor` checks that a project is ready to deploy and reports problems without changing anything. It exits with an error if anything would stop a deploy.
-  - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, the base is pinned to a version and that version is the newest, and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
+  - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, a versioned base is the newest version (an unversioned one is fine for built services, which record its digest), and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
   - **Static sites:** the directory exists, and so does the `fallback` page.
   - **Local tools:** Docker and buildx are available to build with.
   - **Pinned images:** the tag exists in its registry, and whether a newer one does.
   - **CI workflows:** steps in the repository's GitHub workflows that use the portal action are on its newest release tag, pass the required inputs and an existing `config`, and grant `packages: read` when they rely on the job's token.
   - **Server:** ssh and Docker work, caddy and cloudflared are running, and the `server` network exists.
-  - **Service:** no other site already routes its domains, the container is healthy, and the deployed image has a base image label.
+  - **Service:** no other site already routes its domains, the container is healthy, the deployed image has base image name and digest labels, and its base image hasn't been rebuilt since.
   - `--fix` adds or corrects the Dockerfile's base image label (see [Base images](#base-images)), and moves workflow steps on an older release of the portal action to the newest one. Steps on a branch or commit are left alone.
 
 These commands also work without a `portal.toml`, for example `portal status -s worthy`.
@@ -176,6 +177,8 @@ LABEL org.opencontainers.image.base.name=${BASE_IMAGE}
 
 The `LABEL` goes in the final stage, and that stage needs its own `ARG BASE_IMAGE` line to see the value. `portal doctor --fix` makes this change: it moves an inline base image into the `ARG`, or reuses the `ARG`s the `FROM` line already has, and corrects a label that doesn't match. `portal deploy` warns when a built image, or one deployed with `--image`, has no label. Static site images get the label automatically. Services pinned to a versioned `image` are checked by that version instead.
 
+`portal deploy` always builds with `--pull`, so a deploy uses the current image behind the base's tag rather than a copy cached on your machine. It also records that image's digest for the server's platform in the `org.opencontainers.image.base.digest` label. `portal update` and `portal ls --outdated` compare it with the digest the tag points to now, so a base on a tag that moves, such as `debian:trixie-slim` or `node:26-slim`, is reported as rebuilt upstream when there's something new to deploy. A base pinned to a digest (`image@sha256:…`) never changes, so it isn't checked. Images built elsewhere, such as in CI, only get this check if their build sets the label; `portal labels` prints it (see [CI](#ci)).
+
 ### CI
 
 This repo is also a GitHub Action. A workflow builds and pushes its image as usual, then deploys it with the action:
@@ -183,7 +186,7 @@ This repo is also a GitHub Action. A workflow builds and pushes its image as usu
 ```yaml
 - uses: actions/checkout@v7 # the action reads portal.toml from the repo
 # ... build and push ghcr.io/owner/app:sha-<commit> ...
-- uses: jason0x43/portal-cli@v0.6.0
+- uses: jason0x43/portal-cli@v0.7.0
   with:
     config: portal.toml
     image: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
@@ -200,6 +203,22 @@ The action:
 3. runs `portal deploy --image`
 
 The server logs in to the registry with the job's `GITHUB_TOKEN` and logs out once the pull is done. The token needs `packages: read`.
+
+To record the base image's digest the way `portal deploy` does (see [Base images](#base-images)), get the labels from the `labels` action and pass them to the build along with any others:
+
+```yaml
+- id: portal
+  uses: jason0x43/portal-cli/labels@v0.7.0
+  with:
+    config: portal.toml
+- uses: docker/build-push-action@v7
+  with:
+    labels: |
+      ${{ steps.meta.outputs.labels }}
+      ${{ steps.portal.outputs.labels }}
+```
+
+`portal doctor --fix` moves both actions to the newest release.
 
 ## Design notes
 

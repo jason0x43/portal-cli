@@ -20,6 +20,12 @@ export const IMAGE_LABEL = "portal.image";
  */
 export const BASE_IMAGE_LABEL = "org.opencontainers.image.base.name";
 
+/**
+ * Standard OCI image label with the digest of the base image a build started
+ * from, so a rebuilt tag such as debian:trixie-slim can be noticed.
+ */
+export const BASE_DIGEST_LABEL = "org.opencontainers.image.base.digest";
+
 export function servicePath(name: string): string {
   return `services/${name}/compose.yaml`;
 }

@@ -8,6 +8,7 @@ import {
 } from "../compose.ts";
 import type { Config } from "../config.ts";
 import * as image from "../image.ts";
+import { baseDigestLabels } from "../outdated.ts";
 import { isVersioned } from "../registry.ts";
 import { q, Remote } from "../remote.ts";
 import {
@@ -79,7 +80,12 @@ async function deployContainer(
   } else {
     tag = image.deployTag(await image.sourceRevision(config.dir));
     step(`building ${repo}:${tag} for ${image.PLATFORM}`);
-    await image.build(config, tag);
+    const base = await baseDigestLabels(config);
+    // Deploy warns about a missing base.name label once the image is built
+    if (base.problem && !base.unlabeled) {
+      warn(base.problem);
+    }
+    await image.build(config, tag, base.labels);
     step(`sending image to ${remote.host}`);
     await image.transfer(remote, `${repo}:${tag}`, step);
     await image.retag(remote, name, `${repo}:${tag}`, tag);

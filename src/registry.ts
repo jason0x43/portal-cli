@@ -110,16 +110,18 @@ async function anonymousToken(challenge: string | null): Promise<string> {
   return token;
 }
 
-/** Every tag in the image's repository, following the registry's pagination. */
-export async function listRegistryTags(ref: string): Promise<string[]> {
+/**
+ * A GET for an image's repository, which takes a path under the repository
+ * or a full URL. It gets an anonymous token if the registry asks for one.
+ */
+function repositoryFetch(ref: string) {
   const { host, repository } = repositoryOf(ref);
-  const tags: string[] = [];
   let token: string | undefined;
-  let url: string | undefined = `https://${host}/v2/${repository}/tags/list?n=1000`;
-  for (let page = 0; url && page < MAX_PAGES; page++) {
+  return async (path: string, headers: Record<string, string> = {}): Promise<Response> => {
+    const url = /^https:/.test(path) ? path : `https://${host}/v2/${repository}/${path}`;
     const get = (): Promise<Response> =>
-      fetch(url!, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      fetch(url, {
+        headers: token ? { ...headers, Authorization: `Bearer ${token}` } : headers,
         signal: AbortSignal.timeout(15_000),
       });
     let response = await get();
@@ -130,12 +132,62 @@ export async function listRegistryTags(ref: string): Promise<string[]> {
     if (!response.ok) {
       throw new Error(`${host} returned ${response.status}`);
     }
+    return response;
+  };
+}
+
+/** Every tag in the image's repository, following the registry's pagination. */
+export async function listRegistryTags(ref: string): Promise<string[]> {
+  const get = repositoryFetch(ref);
+  const tags: string[] = [];
+  let url: string | undefined = "tags/list?n=1000";
+  for (let page = 0; url && page < MAX_PAGES; page++) {
+    const response = await get(url);
     const body = (await response.json()) as { tags?: string[] | null };
     tags.push(...(body.tags ?? []));
     const next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
-    url = next ? new URL(next, url).href : undefined;
+    url = next ? new URL(next, response.url).href : undefined;
   }
   return tags;
+}
+
+const MANIFEST_TYPES = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+];
+
+interface ManifestList {
+  manifests?: { digest: string; platform?: { os: string; architecture: string } }[];
+}
+
+/**
+ * The digest of the image a tag points to for `platform` (e.g. linux/amd64):
+ * the platform's entry in a multi-platform index, or the manifest itself for
+ * a single-platform image. An index's own digest changes whenever any
+ * platform is rebuilt, so it isn't used.
+ */
+export async function imageDigest(ref: string, platform: string): Promise<string> {
+  const [os, architecture] = platform.split("/");
+  const response = await repositoryFetch(ref)(`manifests/${refTag(ref) ?? "latest"}`, {
+    Accept: MANIFEST_TYPES.join(", "),
+  });
+  const body = (await response.json()) as ManifestList;
+  if (body.manifests) {
+    const entry = body.manifests.find(
+      (m) => m.platform?.os === os && m.platform?.architecture === architecture,
+    );
+    if (!entry) {
+      throw new Error(`${imageName(ref)} has no ${platform} image`);
+    }
+    return entry.digest;
+  }
+  const digest = response.headers.get("docker-content-digest");
+  if (!digest) {
+    throw new Error("registry returned no digest");
+  }
+  return digest;
 }
 
 /** Whether an image reference is pinned to a version tag that can be checked. */
