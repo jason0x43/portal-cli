@@ -279,13 +279,6 @@ async function checkLocalDocker(report: Report) {
   if (!(await hasPlugin("buildx"))) {
     report.fail(`docker buildx isn't installed; it's needed to build for ${PLATFORM}`);
   }
-  if (await hasPlugin("pussh")) {
-    report.ok("images are sent with docker pussh");
-  } else {
-    report.ok(
-      `images are sent whole with docker save ${dim("(install unregistry's docker pussh to send only changed layers)")}`,
-    );
-  }
 }
 
 async function checkPinnedImage(report: Report, ref: string) {

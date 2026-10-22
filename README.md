@@ -130,7 +130,7 @@ portal doctor
 - `doctor` checks that a project is ready to deploy and reports problems without changing anything. It exits with an error if anything would stop a deploy.
   - **Project:** `portal.toml` is valid; the Dockerfile labels its base image, the base is pinned to a version and that version is the newest, and `EXPOSE` matches `port`. Image services with a Dockerfile in the project, such as ones CI builds, are checked too.
   - **Static sites:** the directory exists, and so does the `fallback` page.
-  - **Local tools:** Docker and buildx are available to build with, and whether `docker pussh` is installed.
+  - **Local tools:** Docker and buildx are available to build with.
   - **Pinned images:** the tag exists in its registry, and whether a newer one does.
   - **CI workflows:** steps in the repository's GitHub workflows that use the portal action are on its newest release tag, pass the required inputs and an existing `config`, and grant `packages: read` when they rely on the job's token.
   - **Server:** ssh and Docker work, caddy and cloudflared are running, and the `server` network exists.
@@ -142,7 +142,7 @@ These commands also work without a `portal.toml`, for example `portal status -s 
 ### How deploys behave
 
 - **Image tags:** images are tagged `portal/<name>:<UTC timestamp>-<git sha>`, and the compose file runs `portal/<name>:latest`. The 3 most recent deploys are kept for rollback.
-- **Image transfer:** images go to the server with `docker pussh` ([unregistry](https://github.com/psviderski/unregistry)) if that's installed, which only sends missing layers. Otherwise portal streams `docker save | docker load`. Set `PORTAL_TRANSFER=load` to force the second method.
+- **Image transfer:** locally built images go to the server as a gzipped `docker save` streamed over ssh into `docker load`.
 - **Failed containers:** if the new container exits, restarts or reports unhealthy within `--timeout` (default 60s), portal prints its logs and puts back the previous image and compose file.
 - **Failed Caddy validation:** if the new route doesn't validate, it's reverted before Caddy reloads.
 - **Static sites:** `static = "dist"` builds an image from a generated Dockerfile: [static-web-server](https://static-web-server.net/) with the directory's contents baked in. The site is then deployed, rolled back and removed like any other service. Its container runs read-only, with no data volume.

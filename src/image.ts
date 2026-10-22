@@ -127,11 +127,7 @@ export function stageStaticSite(
   return staging;
 }
 
-/**
- * Copy a local image to the server. Uses `docker pussh` (unregistry), which
- * only sends missing layers, if it's installed; otherwise streams a gzipped
- * `docker save` into `docker load`. Set PORTAL_TRANSFER=load to skip pussh.
- */
+/** Copy a local image to the server by streaming a gzipped `docker save` into `docker load`. */
 export async function transfer(
   remote: Remote,
   ref: string,
@@ -141,12 +137,6 @@ export async function transfer(
     // Built by this machine's Docker, which is the server's
     return;
   }
-  if (process.env.PORTAL_TRANSFER !== "load" && (await hasPlugin("pussh"))) {
-    log("transferring with docker pussh");
-    await run(["docker", "pussh", ref, remote.host], { inherit: true });
-    return;
-  }
-
   log("transferring with docker save | docker load");
   const save = Bun.spawn(["docker", "save", ref], {
     stdout: "pipe",
