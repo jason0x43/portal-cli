@@ -1,6 +1,7 @@
 import {
   BASE_IMAGE_LABEL,
   imageRepo,
+  renderDisabledSite,
   renderService,
   renderSite,
   renderStaticDockerfile,
@@ -13,10 +14,11 @@ import { isVersioned } from "../registry.ts";
 import { q, Remote } from "../remote.ts";
 import {
   DeployError,
-  serviceCompose,
+  disabledPath,
+  isDisabled,
+  recreateService,
   sitePath,
   updateSite,
-  waitForService,
 } from "../server.ts";
 import { bold, dim, done, step, warn } from "../ui.ts";
 
@@ -116,19 +118,28 @@ async function deployContainer(
     await remote.exec(`mkdir -p ${q(`services/${name}/data`)}`);
   }
 
-  step(`starting ${name}`);
+  // A disabled service gets the new version but stays stopped until `enable`
+  const disabled = await isDisabled(remote, name);
+  step(disabled ? `updating ${name}, which is disabled` : `starting ${name}`);
   try {
-    await serviceCompose(remote, name, "up -d --force-recreate", { inherit: true });
-    await waitForService(remote, name, { timeout: options.timeout });
+    await recreateService(remote, name, { timeout: options.timeout });
   } catch (err) {
     if (previousImage && previousCompose !== undefined) {
       await restorePrevious(remote, name, previousImage, previousCompose);
     }
     throw err;
   }
-  done(`${name} is running ${dim(`(${repo}:${tag})`)}`);
+  if (disabled) {
+    warn(`${name} is disabled, so it wasn't started (\`portal enable\` starts it)`);
+  } else {
+    done(`${name} is running ${dim(`(${repo}:${tag})`)}`);
+  }
 
-  if (await updateSite(remote, name, renderSite(config))) {
+  const route = renderSite(config);
+  if (disabled) {
+    await remote.writeFile(disabledPath(name), route);
+  }
+  if (await updateSite(remote, name, disabled ? renderDisabledSite(route) : route)) {
     done("updated Caddy route");
   }
 
@@ -152,9 +163,8 @@ async function restorePrevious(
   try {
     await remote.exec(`docker tag ${q(imageId)} ${q(`${imageRepo(name)}:latest`)}`);
     await remote.writeFile(servicePath(name), compose);
-    await serviceCompose(remote, name, "up -d --force-recreate", { inherit: true });
-    await waitForService(remote, name);
-    done(`${name} is running the previous version`);
+    await recreateService(remote, name);
+    done(`restored the previous version of ${name}`);
   } catch (err) {
     warn(`couldn't restore the previous version: ${(err as Error).message}`);
   }

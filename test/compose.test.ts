@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parse } from "yaml";
 import {
+  renderDisabledSite,
   renderService,
   renderSite,
   renderStaticDockerfile,
@@ -170,5 +171,14 @@ describe("static sites", () => {
     const sources = [...dockerfile.matchAll(/source = "([^"]+)"/g)].map((m) => m[1]);
     expect(sources).toEqual(["/**", "/assets/**", "/_app/**"]);
     expect(dockerfile.match(/immutable"/g)).toHaveLength(2);
+  });
+});
+
+describe("renderDisabledSite", () => {
+  test("answers the route's domains with a 503", () => {
+    const route = renderSite({ ...worthy, domains: ["a.example.com", "b.example.com"] });
+    expect(renderDisabledSite(route)).toBe(
+      'http://a.example.com, http://b.example.com {\n\trespond "Service Unavailable" 503\n}\n',
+    );
   });
 });

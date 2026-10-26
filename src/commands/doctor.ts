@@ -33,7 +33,7 @@ import {
   parseVersion,
 } from "../registry.ts";
 import { q, Remote, run } from "../remote.ts";
-import { sitePath } from "../server.ts";
+import { isDisabled, sitePath } from "../server.ts";
 import { cyan, dim, done, green, red, warn, yellow } from "../ui.ts";
 import { ACTION_REPO, ACTION_REQUIRED_INPUTS, actionSteps, updateActionRef } from "../workflow.ts";
 
@@ -481,6 +481,9 @@ async function checkService(
   if (!(await remote.exists(servicePath(name)))) {
     report.ok("not deployed yet");
     return;
+  }
+  if (await isDisabled(remote, name)) {
+    report.warn("disabled", "`portal enable` starts it");
   }
   const state = (
     await remote.exec(

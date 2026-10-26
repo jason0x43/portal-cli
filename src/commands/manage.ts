@@ -1,11 +1,14 @@
-import { imageRepo, servicePath } from "../compose.ts";
+import { imageRepo, renderDisabledSite, servicePath } from "../compose.ts";
 import { formatValue, isValidKey, parseEnv, setVars, unsetVars } from "../dotenv.ts";
 import { DEPLOY_TAG_RE } from "../image.ts";
 import { checkVersions, outdatedSummary, serviceImages } from "../outdated.ts";
 import { CommandError, q, type Remote } from "../remote.ts";
 import {
   DeployError,
+  disabledPath,
   envPath,
+  isDisabled,
+  recreateService,
   serviceCompose,
   sitePath,
   updateSite,
@@ -104,11 +107,11 @@ async function applyEnv(target: Target, restart: boolean) {
   }
   // Recreate rather than restart so compose re-reads env_file
   step(`recreating ${target.name} to apply changes`);
-  await serviceCompose(target.remote, target.name, "up -d --force-recreate", {
-    inherit: true,
-  });
-  await waitForService(target.remote, target.name);
-  done(`${target.name} is running`);
+  if (await recreateService(target.remote, target.name)) {
+    done(`${target.name} is running`);
+  } else {
+    done(`updated ${target.name}, which is disabled, so it wasn't started`);
+  }
 }
 
 // ---------------------------------------------------------------- status
@@ -122,6 +125,9 @@ export async function status(target: Target) {
       `ps -a --format 'table {{.Name}}\\t{{.Status}}\\t{{.RunningFor}}'`,
       { inherit: true },
     );
+    if (await isDisabled(remote, name)) {
+      console.log(`\n${bold("disabled")} ${dim("(`portal enable` starts it)")}`);
+    }
     const images = await imageTags(target);
     if (images.length > 0) {
       console.log(`\n${bold("images")} ${dim("(newest first)")}`);
@@ -184,6 +190,9 @@ export async function logs(
 
 export async function restart(target: Target) {
   await requireComposeService(target);
+  if (await isDisabled(target.remote, target.name)) {
+    throw new DeployError(`${target.name} is disabled; \`portal enable\` starts it`);
+  }
   step(`restarting ${target.name}`);
   await serviceCompose(target.remote, target.name, "restart", { inherit: true });
   await waitForService(target.remote, target.name);
@@ -211,11 +220,61 @@ export async function rollback(target: Target, tag?: string) {
   const repo = imageRepo(target.name);
   step(`switching ${target.name} to ${chosen.tag}`);
   await target.remote.exec(`docker tag ${q(`${repo}:${chosen.tag}`)} ${q(`${repo}:latest`)}`);
-  await serviceCompose(target.remote, target.name, "up -d --force-recreate", {
-    inherit: true,
-  });
-  await waitForService(target.remote, target.name);
-  done(`${target.name} is running ${repo}:${chosen.tag}`);
+  if (await recreateService(target.remote, target.name)) {
+    done(`${target.name} is running ${repo}:${chosen.tag}`);
+  } else {
+    done(`switched ${target.name} to ${repo}:${chosen.tag}; it's disabled, so it wasn't started`);
+  }
+}
+
+// ---------------------------------------------------------------- enable / disable
+
+/**
+ * Stop the service and keep it stopped until `enable`, through reboots and
+ * deploys. Its domains answer with a 503 meanwhile.
+ */
+export async function disable(target: Target) {
+  await requireComposeService(target);
+  const { remote, name } = target;
+  if (await isDisabled(remote, name)) {
+    warn(`${name} is already disabled`);
+    return;
+  }
+  // Mark it first, so a deploy that runs meanwhile doesn't start it again
+  const route = await remote.readFile(sitePath(name));
+  await remote.writeFile(disabledPath(name), route ?? "");
+  step(`stopping ${name}`);
+  // Stopped rather than removed, so its logs are kept. With restart:
+  // unless-stopped, Docker leaves it stopped when the daemon restarts.
+  await serviceCompose(remote, name, "stop", { inherit: true });
+  if (route) {
+    await updateSite(remote, name, renderDisabledSite(route));
+  }
+  done(`disabled ${name}${route ? "; its domains respond with 503" : ""}`);
+}
+
+export async function enable(target: Target) {
+  await requireComposeService(target);
+  const { remote, name } = target;
+  const route = await remote.readFile(disabledPath(name));
+  if (route === undefined) {
+    warn(`${name} isn't disabled`);
+    return;
+  }
+  step(`starting ${name}`);
+  try {
+    await serviceCompose(remote, name, "up -d", { inherit: true });
+    await waitForService(remote, name);
+  } catch (err) {
+    // Leave it disabled rather than restarting in a loop
+    await serviceCompose(remote, name, "stop", { allowFail: true });
+    throw err;
+  }
+  if (route) {
+    await updateSite(remote, name, route);
+  }
+  await remote.removeFile(disabledPath(name));
+  done(`enabled ${name}`);
 }
 
 // ---------------------------------------------------------------- remove
@@ -257,6 +316,7 @@ export async function remove(
     step("deleting data");
     await remote.exec(`rm -rf ${q(`services/${name}`)}`);
   } else if (isService) {
+    await remote.removeFile(disabledPath(name));
     await remote.exec(`rmdir ${q(`services/${name}`)} 2>/dev/null || true`);
   }
   done(`removed ${name}`);
@@ -282,7 +342,8 @@ export async function list(remote: Remote, { outdated = false } = {}) {
       "for f in services/*/compose.yaml; do",
       '  [ -e "$f" ] || continue',
       '  n=${f#services/}; n=${n%/compose.yaml}',
-      `  printf 'S\\t%s\\t%s\\n' "$n" "$(docker inspect --format '{{.State.Status}}{{if .State.Health}} ({{.State.Health.Status}}){{end}}' "$n" 2>/dev/null || echo missing)"`,
+      `  if [ -e "services/$n/disabled" ]; then s=disabled; else s=$(docker inspect --format '{{.State.Status}}{{if .State.Health}} ({{.State.Health.Status}}){{end}}' "$n" 2>/dev/null || echo missing); fi`,
+      `  printf 'S\\t%s\\t%s\\n' "$n" "$s"`,
       `  docker image ls "portal/$n" --format "I\\t$n\\t{{.Tag}}\\t{{.ID}}"`,
       `  [ -f "caddy/sites/$n.caddy" ] && printf 'R\\t%s\\t%s\\n' "$n" "$(head -1 "caddy/sites/$n.caddy" | sed 's/ *{$//; s|http://||g')"`,
       "done; true",

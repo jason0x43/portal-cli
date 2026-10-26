@@ -184,3 +184,12 @@ export function renderSite(config: Config): string {
   }
   return `${address} {\n${body.map((l) => `\t${l}`).join("\n")}\n}\n`;
 }
+
+/**
+ * The route a disabled service gets in place of `route`, its real one: the
+ * same domains, answered with a 503.
+ */
+export function renderDisabledSite(route: string): string {
+  const address = route.slice(0, route.indexOf("{")).trim();
+  return `${address} {\n\trespond "Service Unavailable" 503\n}\n`;
+}

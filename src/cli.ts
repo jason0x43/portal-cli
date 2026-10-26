@@ -6,6 +6,8 @@ import { init } from "./commands/init.ts";
 import { labels } from "./commands/labels.ts";
 import { rollbackUpdate, update } from "./commands/update.ts";
 import {
+  disable,
+  enable,
   envList,
   envSet,
   envUnset,
@@ -25,7 +27,12 @@ import {
   loadConfig,
 } from "./config.ts";
 import { CommandError, Remote } from "./remote.ts";
-import { DeployError, resolveTarget } from "./server.ts";
+import {
+  DeployError,
+  resolveTarget,
+  type Target,
+  type TargetOptions,
+} from "./server.ts";
 import { red } from "./ui.ts";
 import pkg from "../package.json";
 
@@ -45,6 +52,20 @@ async function serverRemote(opts: {
     opts.host ?? config?.host ?? DEFAULT_HOST,
     opts.root ?? config?.root ?? DEFAULT_ROOT,
   );
+}
+
+/**
+ * Run `action` on each named service, or on the one that portal.toml or
+ * --service picks if none are named.
+ */
+async function eachService(
+  names: string[],
+  options: TargetOptions,
+  action: (target: Target) => Promise<void>,
+) {
+  for (const service of names.length > 0 ? names : [options.service]) {
+    await action(await resolveTarget({ ...options, service }));
+  }
 }
 
 function positiveSeconds(value: string): number {
@@ -136,6 +157,18 @@ program
   .command("restart")
   .description("Restart the service")
   .action(async (_opts, cmd) => restart(await resolveTarget(cmd.optsWithGlobals())));
+
+program
+  .command("disable")
+  .description("Stop services and keep them stopped, even through deploys, until enabled")
+  .argument("[services...]", "service names (default: this project's)")
+  .action((names, _opts, cmd) => eachService(names, cmd.optsWithGlobals(), disable));
+
+program
+  .command("enable")
+  .description("Start disabled services and restore their routes")
+  .argument("[services...]", "service names (default: this project's)")
+  .action((names, _opts, cmd) => eachService(names, cmd.optsWithGlobals(), enable));
 
 const env = program
   .command("env")

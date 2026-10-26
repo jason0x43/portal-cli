@@ -16,6 +16,37 @@ export const CADDYFILE = "/etc/caddy/Caddyfile";
 export const sitePath = (name: string) => `caddy/sites/${name}.caddy`;
 export const envPath = (name: string) => `services/${name}/.env`;
 
+/**
+ * Marks a disabled service. It holds the service's real Caddy route while a
+ * 503 route stands in for it, so `enable` can put it back without the
+ * project's portal.toml.
+ */
+export const disabledPath = (name: string) => `services/${name}/disabled`;
+
+export function isDisabled(remote: Remote, name: string): Promise<boolean> {
+  return remote.exists(disabledPath(name));
+}
+
+/**
+ * Recreate the service's container so it picks up a new image, compose file
+ * or .env, and wait for it to come up. A disabled service's container is only
+ * created, so it stays stopped until `portal enable`. Returns whether the
+ * container was started.
+ */
+export async function recreateService(
+  remote: Remote,
+  name: string,
+  { timeout }: { timeout?: number } = {},
+): Promise<boolean> {
+  if (await isDisabled(remote, name)) {
+    await serviceCompose(remote, name, "create --force-recreate", { inherit: true });
+    return false;
+  }
+  await serviceCompose(remote, name, "up -d --force-recreate", { inherit: true });
+  await waitForService(remote, name, { timeout });
+  return true;
+}
+
 /** `docker compose` for a service's own project (services/<name>/compose.yaml). */
 export function serviceCompose(
   remote: Remote,

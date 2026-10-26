@@ -110,6 +110,8 @@ portal update --rollback
 portal status
 portal logs -f
 portal restart
+portal disable worthy
+portal enable worthy
 portal rollback
 portal remove
 portal doctor
@@ -125,6 +127,10 @@ portal doctor
 - `status` shows the container, deployed image tags and route.
 - `logs -f` follows the logs.
 - `restart` restarts the container.
+- `disable` takes one or more service names, so it works from anywhere, or acts on the current project's service when given none. It stops the service and keeps it stopped until `enable`, including through reboots and deploys. Its domains respond with a 503 in the meantime.
+  - **Deploys while disabled** still install the new image and config, so CI keeps working, but they don't start the container. `env set` and `rollback` work the same way.
+  - `ls` and `status` show the service as disabled.
+- `enable` takes service names the same way. It starts a disabled service, waits for it to come up and puts its route back. If it doesn't come up, it's stopped again and stays disabled.
 - `rollback` switches to the previous image. `portal rollback <tag>` switches to a specific one.
 - `remove` stops the service and removes its config but keeps its data. Add `--purge` to delete the data too.
 - `labels` prints the labels portal adds to images it builds, one `key=value` per line, for a build done elsewhere (see [CI](#ci)). Right now that's the base image's digest. A label it can't work out is left out with a warning, so the build still runs.
