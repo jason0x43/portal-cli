@@ -4,7 +4,7 @@ import { deploy } from "./commands/deploy.ts";
 import { doctor } from "./commands/doctor.ts";
 import { init } from "./commands/init.ts";
 import { labels } from "./commands/labels.ts";
-import { rollbackUpdate, update } from "./commands/update.ts";
+import { checkUpdates, rollbackUpdate, update } from "./commands/update.ts";
 import {
   disable,
   enable,
@@ -111,8 +111,12 @@ program
   .command("update")
   .description("Update the shared infrastructure (cloudflared, caddy)")
   .option("--rollback", "switch back to the images the last update replaced")
+  .option("--check", "show the running versions and newer ones, without updating")
   .action(async (opts, cmd) => {
     const remote = await serverRemote(cmd.optsWithGlobals());
+    if (opts.check) {
+      return checkUpdates(remote);
+    }
     return opts.rollback ? rollbackUpdate(remote) : update(remote);
   });
 

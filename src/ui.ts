@@ -30,3 +30,14 @@ export function confirm(question: string): boolean {
   const answer = prompt(`${question} [y/N]`);
   return answer?.trim().toLowerCase() === "y";
 }
+
+/** Print rows to stdout in aligned columns under a bold header. */
+export function printTable(header: string[], rows: string[][]) {
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
+  const format = (r: string[]) =>
+    r.map((c, i) => (i < r.length - 1 ? c.padEnd(widths[i]!) : c)).join("  ");
+  console.log(bold(format(header)));
+  for (const row of rows) {
+    console.log(format(row));
+  }
+}

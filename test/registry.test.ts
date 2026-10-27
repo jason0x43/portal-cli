@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { imageName, newestTag, repositoryOf } from "../src/registry.ts";
+import {
+  imageName,
+  newestTag,
+  repositoryOf,
+  versionCandidates,
+} from "../src/registry.ts";
 
 describe("newestTag", () => {
   const tags = [
@@ -29,6 +34,42 @@ describe("newestTag", () => {
   test("is undefined when the pin is current or not a version", () => {
     expect(newestTag("18.24.2", tags)).toBeUndefined();
     expect(newestTag("latest", tags)).toBeUndefined();
+  });
+});
+
+describe("versionCandidates", () => {
+  const tags = [
+    "latest",
+    "2",
+    "2.10",
+    "2.10.3",
+    "2.11",
+    "2.11.6",
+    "2.11.7",
+    "2.11.7-alpine",
+    "2.12.0-beta.1",
+    "2.11.7.1",
+  ];
+
+  test("lists versions within a moving version tag, most specific and newest first", () => {
+    expect(versionCandidates("2.11", tags)).toEqual(["2.11.7.1", "2.11.7", "2.11.6"]);
+    expect(versionCandidates("2.11-alpine", tags)).toEqual(["2.11.7-alpine"]);
+  });
+
+  test("lists every unsuffixed version for an unversioned tag", () => {
+    expect(versionCandidates("latest", tags)).toEqual([
+      "2.11.7.1",
+      "2.11.7",
+      "2.11.6",
+      "2.10.3",
+      "2.11",
+      "2.10",
+      "2",
+    ]);
+  });
+
+  test("is empty for a fully specific tag", () => {
+    expect(versionCandidates("2.11.7.1", tags)).toEqual([]);
   });
 });
 

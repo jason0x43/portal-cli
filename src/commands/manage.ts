@@ -15,7 +15,7 @@ import {
   waitForService,
   type Target,
 } from "../server.ts";
-import { bold, confirm, dim, done, step, warn } from "../ui.ts";
+import { bold, confirm, dim, done, printTable, step, warn } from "../ui.ts";
 
 async function isComposeService({ remote, name }: Target): Promise<boolean> {
   return remote.exists(servicePath(name));
@@ -404,11 +404,5 @@ export async function list(remote: Remote, { outdated = false } = {}) {
       warn(`couldn't check ${ref} for newer versions: ${error}`);
     }
   }
-  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
-  const format = (r: string[]) =>
-    r.map((c, i) => (i < r.length - 1 ? c.padEnd(widths[i]!) : c)).join("  ");
-  console.log(bold(format(header)));
-  for (const row of rows) {
-    console.log(format(row));
-  }
+  printTable(header, rows);
 }

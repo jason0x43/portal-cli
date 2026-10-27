@@ -111,16 +111,22 @@ async function anonymousToken(challenge: string | null): Promise<string> {
 }
 
 /**
- * A GET for an image's repository, which takes a path under the repository
- * or a full URL. It gets an anonymous token if the registry asks for one.
+ * A GET (or HEAD) for an image's repository, which takes a path under the
+ * repository or a full URL. It gets an anonymous token if the registry asks
+ * for one.
  */
 function repositoryFetch(ref: string) {
   const { host, repository } = repositoryOf(ref);
   let token: string | undefined;
-  return async (path: string, headers: Record<string, string> = {}): Promise<Response> => {
+  return async (
+    path: string,
+    headers: Record<string, string> = {},
+    method = "GET",
+  ): Promise<Response> => {
     const url = /^https:/.test(path) ? path : `https://${host}/v2/${repository}/${path}`;
     const get = (): Promise<Response> =>
       fetch(url, {
+        method,
         headers: token ? { ...headers, Authorization: `Bearer ${token}` } : headers,
         signal: AbortSignal.timeout(15_000),
       });
@@ -188,6 +194,83 @@ export async function imageDigest(ref: string, platform: string): Promise<string
     throw new Error("registry returned no digest");
   }
   return digest;
+}
+
+/**
+ * The digest a tag points to as a whole, which is what `docker pull` records
+ * in an image's RepoDigests. It's a HEAD request, which Docker Hub doesn't
+ * count against its pull rate limit.
+ */
+export async function manifestDigest(ref: string): Promise<string> {
+  return tagDigest(repositoryFetch(ref), refTag(ref) ?? "latest");
+}
+
+async function tagDigest(
+  get: ReturnType<typeof repositoryFetch>,
+  tag: string,
+): Promise<string> {
+  const response = await get(
+    `manifests/${tag}`,
+    { Accept: MANIFEST_TYPES.join(", ") },
+    "HEAD",
+  );
+  const digest = response.headers.get("docker-content-digest");
+  if (!digest) {
+    throw new Error("registry returned no digest");
+  }
+  return digest;
+}
+
+/**
+ * Tags that could be the specific version a moving tag points to, most
+ * specific and newest first: for 2.11, tags like 2.11.7; for latest or
+ * another unversioned tag, any version without a suffix.
+ */
+export function versionCandidates(tag: string, tags: string[]): string[] {
+  const moving = parseVersion(tag);
+  return tags
+    .map((t) => ({ tag: t, version: parseVersion(t) }))
+    .filter(
+      (c): c is { tag: string; version: Version } =>
+        c.version !== undefined &&
+        (moving
+          ? c.version.prefix === moving.prefix &&
+            c.version.suffix === moving.suffix &&
+            c.version.numbers.length > moving.numbers.length &&
+            compareNumbers(moving.numbers, c.version.numbers) === 0
+          : c.version.suffix === ""),
+    )
+    .sort(
+      (a, b) =>
+        b.version.numbers.length - a.version.numbers.length ||
+        compareNumbers(b.version.numbers, a.version.numbers),
+    )
+    .map((c) => c.tag);
+}
+
+/** How many candidate tags to ask about before giving up on naming a version. */
+const MAX_VERSION_LOOKUPS = 20;
+
+/**
+ * The version tag that points to the same image as `digest` (a digest
+ * `manifestDigest` returns for `ref`), e.g. 2.11.7 for an image pulled as
+ * caddy:2.11. Undefined if it's not one of the newest few versions.
+ */
+export async function versionOf(
+  ref: string,
+  digest: string,
+  tags: string[],
+): Promise<string | undefined> {
+  const tag = refTag(ref) ?? "latest";
+  if (parseVersion(tag) && !versionCandidates(tag, tags).length) {
+    return tag;
+  }
+  const get = repositoryFetch(ref);
+  for (const candidate of versionCandidates(tag, tags).slice(0, MAX_VERSION_LOOKUPS)) {
+    if ((await tagDigest(get, candidate)) === digest) {
+      return candidate;
+    }
+  }
 }
 
 /** Whether an image reference is pinned to a version tag that can be checked. */

@@ -5,9 +5,17 @@ import {
   isPinned,
   serviceImages,
 } from "../outdated.ts";
+import {
+  imageName,
+  listRegistryTags,
+  manifestDigest,
+  newestTag,
+  versionOf,
+} from "../registry.ts";
+import { refTag } from "../image.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
-import { bold, dim, done, step, warn } from "../ui.ts";
+import { bold, dim, done, printTable, step, warn } from "../ui.ts";
 
 /** Service images older than this get a reminder to redeploy them. */
 export const STALE_IMAGE_DAYS = 30;
@@ -260,6 +268,87 @@ export async function update(remote: Remote) {
     allowFail: true,
   });
   await reportStaleServices(remote);
+}
+
+/** The OCI label an image may name its version in, e.g. v2.11.7 */
+const VERSION_LABEL = "org.opencontainers.image.version";
+
+/**
+ * The digest the running image was pulled as, from its RepoDigests, and its
+ * version label, for each infrastructure container.
+ */
+async function runningImages(
+  remote: Remote,
+  containers: InfraContainer[],
+): Promise<Map<string, { digests: string[]; label?: string }>> {
+  const result = await remote.exec(
+    `docker image inspect --format '{{.Id}}\t{{join .RepoDigests " "}}\t{{index .Config.Labels "${VERSION_LABEL}"}}' ${containers
+      .map((c) => q(c.imageId))
+      .join(" ")}`,
+    { allowFail: true },
+  );
+  return new Map(
+    result.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [id = "", digests = "", label = ""] = line.split("\t");
+        return [id, { digests: digests.split(" ").filter(Boolean), label: label || undefined }];
+      }),
+  );
+}
+
+/**
+ * Show the version each infrastructure container is running, and what
+ * `portal update` would move it to without changing anything: the version
+ * its tag points to now, and a newer version of a pinned tag, which only
+ * changing the pin gets.
+ */
+export async function checkUpdates(remote: Remote) {
+  const containers = await infraContainers(remote);
+  if (containers.length === 0) {
+    console.error(dim(`no infrastructure containers on ${remote.host}`));
+    return;
+  }
+  const running = await runningImages(remote, containers);
+  const rows = await Promise.all(
+    containers.map(async ({ service, ref, imageId: id }) => {
+      const image = running.get(id);
+      const label = image?.label?.replace(/^v(?=\d)/, "");
+      // RepoDigests holds one entry per repository the image was pulled from
+      const pulled = image?.digests
+        .find((d) => d.startsWith(`${imageName(ref)}@`))
+        ?.split("@")[1];
+      try {
+        const [tags, digest] = await Promise.all([listRegistryTags(ref), manifestDigest(ref)]);
+        const newer = newestTag(refTag(ref) ?? "latest", tags);
+        const latest = await versionOf(ref, digest, tags);
+        const upToDate = pulled === digest;
+        const version =
+          (upToDate ? latest : pulled && (await versionOf(ref, pulled, tags))) || label;
+        const available: string[] = [];
+        if (!pulled) {
+          // Without the digest it was pulled as, only a version change shows
+          if (latest && latest !== version) {
+            available.push(latest);
+          }
+        } else if (!upToDate) {
+          available.push(
+            latest && latest !== version ? latest : `${latest ?? "newer image"} (rebuilt upstream)`,
+          );
+        }
+        if (newer) {
+          available.push(`${newer} (change the pin)`);
+        }
+        return [service, ref, version ?? "unknown", available.join(", ") || "-"];
+      } catch (err) {
+        warn(`couldn't check ${ref} for newer versions: ${(err as Error).message}`);
+        return [service, ref, label ?? "unknown", "?"];
+      }
+    }),
+  );
+  printTable(["SERVICE", "IMAGE", "VERSION", "AVAILABLE"], rows);
 }
 
 /**

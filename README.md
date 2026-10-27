@@ -105,6 +105,7 @@ The second form reads the value from stdin, so it stays out of shell history. `e
 
 ```bash
 portal ls
+portal update --check
 portal update
 portal update --rollback
 portal status
@@ -122,6 +123,7 @@ portal doctor
 - `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy) and recreates only the containers whose image changed.
   - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
   - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
+  - **Checking first:** `update --check` shows the version each container is running and what's available, without changing anything. That's the version its tag points to now (marked `(rebuilt upstream)` if the tag points to a new build of the same version), and a newer version of a pinned tag, such as `caddy:2.12` for `caddy:2.11`, which only changing the pin gets. Versions are worked out from the registry's tags, falling back to the image's `org.opencontainers.image.version` label.
   - **Later rollback:** the images an update replaced are kept as `<image>:<tag>-previous`, and `portal update --rollback` switches back to them for problems noticed after the update finished.
   - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service that was last deployed more than 30 days ago, unless it can check the image's base digest (see [Base images](#base-images)). For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images. Built images are checked the same way against the base image they name, and against the digest that base had when they were built (see [Base images](#base-images)).
 - `status` shows the container, deployed image tags and route.
