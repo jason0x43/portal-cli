@@ -4,18 +4,22 @@ import {
   isOutdated,
   isPinned,
   serviceImages,
+  uncheckedReason,
+  upgradeRows,
+  type VersionCheck,
 } from "../outdated.ts";
 import {
+  imageDigest,
   imageName,
   listRegistryTags,
   manifestDigest,
   newestTag,
   versionOf,
 } from "../registry.ts";
-import { refTag } from "../image.ts";
+import { PLATFORM, refTag } from "../image.ts";
 import { q, type Remote } from "../remote.ts";
 import { DeployError, waitForService } from "../server.ts";
-import { bold, dim, done, printTable, step, warn } from "../ui.ts";
+import { bold, dim, done, printTable, spin, step, warn } from "../ui.ts";
 
 /** Service images older than this get a reminder to redeploy them. */
 export const STALE_IMAGE_DAYS = 30;
@@ -29,6 +33,11 @@ interface InfraContainer {
   ref: string;
   /** Image the container is running */
   imageId: string;
+  /**
+   * The platform manifest it's running, with the containerd image store,
+   * where `imageId` is the multi-platform index
+   */
+  manifest?: string;
 }
 
 /** `ref` with a suffix added to its tag, e.g. caddy:2.11 → caddy:2.11-previous */
@@ -50,25 +59,40 @@ const holdRef = (ref: string) => suffixedRef(ref, "pre-update");
 /** Containers in the root (infrastructure) project and the images they run. */
 async function infraContainers(remote: Remote): Promise<InfraContainer[]> {
   const result = await remote.exec(
-    `docker compose ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}\t{{.Name}}\t{{.Config.Image}}\t{{.Image}}'`,
+    `docker compose ps -q | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}\t{{.Name}}\t{{.Config.Image}}\t{{.Image}}\t{{with .ImageManifestDescriptor}}{{.Digest}}{{end}}'`,
   );
   return result.stdout
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [service = "", name = "", ref = "", imageId = ""] = line.split("\t");
-      return { service, container: name.replace(/^\//, ""), ref, imageId };
+      const [service = "", name = "", ref = "", imageId = "", manifest = ""] = line.split("\t");
+      return {
+        service,
+        container: name.replace(/^\//, ""),
+        ref,
+        imageId,
+        manifest: manifest || undefined,
+      };
     });
 }
 
-async function imageId(remote: Remote, ref: string): Promise<string | undefined> {
+/**
+ * The image `ref` names for the server's platform. With the containerd image
+ * store, an image's ID is its multi-platform index, which is republished
+ * whenever any platform is rebuilt, so the platform's manifest is used
+ * instead; the classic store only has the platform's image, so its ID is.
+ */
+async function platformImage(remote: Remote, ref: string): Promise<string | undefined> {
   const result = await remote.exec(
-    `docker image inspect --format '{{.Id}}' ${q(ref)}`,
+    `docker image inspect --platform ${PLATFORM} --format '{{with .Descriptor}}{{.Digest}}{{else}}{{.Id}}{{end}}' ${q(ref)}`,
     { allowFail: true },
   );
   return result.code === 0 ? result.stdout.trim() : undefined;
 }
+
+/** The image a container is running, comparable with platformImage(). */
+const runningImage = (c: InfraContainer) => c.manifest ?? c.imageId;
 
 /** Every domain with a Caddy route. */
 async function routeDomains(remote: Remote): Promise<string[]> {
@@ -133,7 +157,8 @@ async function waitForRoutes(
 
 /**
  * Point each container's image reference at the image `sources` names for it
- * (a tag, since old images may have no addressable ID), and recreate it.
+ * (a tag, since old images may have no addressable ID), recreate it, and make
+ * sure it's running that image.
  */
 async function switchImages(
   remote: Remote,
@@ -149,6 +174,14 @@ async function switchImages(
   const services = containers.map((c) => q(c.service)).join(" ");
   // The images are local now; don't let compose pull the tags forward again
   await remote.compose(`up -d --pull never ${services}`, { inherit: true });
+  const recreated = await infraContainers(remote);
+  for (const { service, ref } of containers) {
+    const now = recreated.find((c) => c.service === service);
+    const wanted = await platformImage(remote, ref);
+    if (!now || !wanted || runningImage(now) !== wanted) {
+      throw new DeployError(`${service} isn't running ${ref} after being recreated`);
+    }
+  }
 }
 
 /**
@@ -162,8 +195,9 @@ async function switchImages(
 export async function update(remote: Remote) {
   const containers = await infraContainers(remote);
   const domains = await routeDomains(remote);
-  step(`checking ${domains.length} routes`);
-  const baseline = await checkRoutes(domains);
+  const baseline = await spin(`checking ${domains.length} routes`, checkRoutes(domains), {
+    persist: true,
+  });
 
   // Hold on to what's running before the pull moves any tags
   const held = new Set<string>();
@@ -192,8 +226,8 @@ export async function update(remote: Remote) {
 
   const changed: InfraContainer[] = [];
   for (const container of containers) {
-    const pulled = await imageId(remote, container.ref);
-    if (pulled && pulled !== container.imageId) {
+    const pulled = await platformImage(remote, container.ref);
+    if (pulled && pulled !== runningImage(container)) {
       changed.push(container);
     }
   }
@@ -220,7 +254,7 @@ export async function update(remote: Remote) {
     for (const { container } of changed) {
       await waitForService(remote, container);
     }
-    const differences = await waitForRoutes(domains, baseline);
+    const differences = await spin("waiting for routes", waitForRoutes(domains, baseline));
     if (differences.length > 0) {
       failure = `routes changed after the update:\n  ${differences.join("\n  ")}`;
     }
@@ -247,7 +281,7 @@ export async function update(remote: Remote) {
     for (const { container } of changed) {
       await waitForService(remote, container);
     }
-    const stillDifferent = await waitForRoutes(domains, baseline);
+    const stillDifferent = await spin("waiting for routes", waitForRoutes(domains, baseline));
     throw new DeployError(
       `${failure}\n${
         stillDifferent.length === 0
@@ -300,20 +334,19 @@ async function runningImages(
 }
 
 /**
- * Show the version each infrastructure container is running, and what
- * `portal update` would move it to without changing anything: the version
- * its tag points to now, and a newer version of a pinned tag, which only
- * changing the pin gets.
+ * What `portal update` would move each infrastructure container to, for
+ * those it would change: the version its tag points to now, and a newer
+ * version of a pinned tag, which only changing the pin gets. Each row is the
+ * service, its image, the version it's running and what's available.
  */
-export async function checkUpdates(remote: Remote) {
+async function infraUpdates(remote: Remote): Promise<string[][]> {
   const containers = await infraContainers(remote);
   if (containers.length === 0) {
-    console.error(dim(`no infrastructure containers on ${remote.host}`));
-    return;
+    return [];
   }
   const running = await runningImages(remote, containers);
   const rows = await Promise.all(
-    containers.map(async ({ service, ref, imageId: id }) => {
+    containers.map(async ({ service, ref, imageId: id, manifest }): Promise<string[][]> => {
       const image = running.get(id);
       const label = image?.label?.replace(/^v(?=\d)/, "");
       // RepoDigests holds one entry per repository the image was pulled from
@@ -324,11 +357,15 @@ export async function checkUpdates(remote: Remote) {
         const [tags, digest] = await Promise.all([listRegistryTags(ref), manifestDigest(ref)]);
         const newer = newestTag(refTag(ref) ?? "latest", tags);
         const latest = await versionOf(ref, digest, tags);
-        const upToDate = pulled === digest;
+        // The index is republished whenever any platform is rebuilt, so the
+        // server's platform decides whether the image is current
+        const upToDate =
+          pulled === digest ||
+          (manifest !== undefined && manifest === (await imageDigest(ref, PLATFORM)));
         const version =
           (upToDate ? latest : pulled && (await versionOf(ref, pulled, tags))) || label;
         const available: string[] = [];
-        if (!pulled) {
+        if (!pulled && !manifest) {
           // Without the digest it was pulled as, only a version change shows
           if (latest && latest !== version) {
             available.push(latest);
@@ -341,14 +378,51 @@ export async function checkUpdates(remote: Remote) {
         if (newer) {
           available.push(`${newer} (change the pin)`);
         }
-        return [service, ref, version ?? "unknown", available.join(", ") || "-"];
+        return available.length > 0
+          ? [[service, ref, version ?? "unknown", available.join(", ")]]
+          : [];
       } catch (err) {
         warn(`couldn't check ${ref} for newer versions: ${(err as Error).message}`);
-        return [service, ref, label ?? "unknown", "?"];
+        return [];
       }
     }),
   );
-  printTable(["SERVICE", "IMAGE", "VERSION", "AVAILABLE"], rows);
+  return rows.flat();
+}
+
+/**
+ * List every upgrade portal can see without changing anything: newer
+ * infrastructure images that `portal update` would pull or that need a pin
+ * changed, and newer or rebuilt versions of the images services are pinned
+ * to or built from. Then list the services it can't fully check, and why.
+ */
+export async function outdated(remote: Remote) {
+  const [infra, [services, checks]] = await spin(
+    `checking for newer images on ${remote.host}`,
+    Promise.all([infraUpdates(remote), checkServices(remote)]),
+  );
+  warnFailedChecks(checks);
+  const rows = [
+    ...infra,
+    ...services.flatMap((s) => upgradeRows(s.name, checks.get(s.name) ?? [])),
+  ];
+  if (rows.length > 0) {
+    printTable(["SERVICE", "IMAGE", "VERSION", "AVAILABLE"], rows);
+  } else {
+    done("everything is up to date");
+  }
+
+  const unchecked = services.flatMap((image) => {
+    const reason = uncheckedReason(image, checks.get(image.name) ?? []);
+    return reason ? [{ ...image, reason }] : [];
+  });
+  if (unchecked.length > 0) {
+    warn("can't fully check these services:");
+    for (const { name, days, reason } of unchecked) {
+      const age = Number.isNaN(days) ? "" : `; deployed ${days} days ago`;
+      console.error(`  ${name} ${dim(`(${reason}${age})`)}`);
+    }
+  }
 }
 
 /**
@@ -360,8 +434,8 @@ export async function rollbackUpdate(remote: Remote) {
   const targets: InfraContainer[] = [];
   const sources = new Map<string, string>();
   for (const container of containers) {
-    const id = await imageId(remote, previousRef(container.ref));
-    if (id && id !== container.imageId) {
+    const previous = await platformImage(remote, previousRef(container.ref));
+    if (previous && previous !== runningImage(container)) {
       targets.push(container);
       sources.set(container.service, previousRef(container.ref));
     }
@@ -384,27 +458,35 @@ export async function rollbackUpdate(remote: Remote) {
   );
 }
 
+/** Every service's image, and what registries say about the images it uses. */
+async function checkServices(remote: Remote) {
+  const services = await serviceImages(remote);
+  return [services, await checkVersions(services)] as const;
+}
+
+/** Warn once for each image a registry couldn't be asked about. */
+function warnFailedChecks(checks: Map<string, VersionCheck[]>) {
+  const failed = new Map(
+    [...checks.values()].flat().flatMap((c) => (c.error ? [[c.ref, c.error]] : [])),
+  );
+  for (const [ref, error] of failed) {
+    warn(`couldn't check ${ref} for newer versions: ${error}`);
+  }
+}
+
 /**
  * Report services whose pinned image, or the base image their image was built
  * from, has a newer version or has been rebuilt under the same tag, and other
- * services whose image is older than STALE_IMAGE_DAYS. Redeploying a pinned
- * image gets the same image again, so those only get the version check.
+ * services whose image is older than STALE_IMAGE_DAYS.
  */
 async function reportStaleServices(remote: Remote) {
-  const services = await serviceImages(remote);
-  const checks = await checkVersions(services);
-  const newer: string[] = [];
-  const failed = new Set<string>();
-  for (const [name, results] of checks) {
-    for (const check of results) {
-      if (check.error && !failed.has(check.ref)) {
-        failed.add(check.ref);
-        warn(`couldn't check ${check.ref} for newer versions: ${check.error}`);
-      } else if (isOutdated(check)) {
-        newer.push(`${name} ${dim(`(${describeCheck(check)})`)}`);
-      }
-    }
-  }
+  const [services, checks] = await spin("checking service images", checkServices(remote));
+  warnFailedChecks(checks);
+  const newer = [...checks].flatMap(([name, results]) =>
+    results
+      .filter((check) => !check.error && isOutdated(check))
+      .map((check) => `${name} ${dim(`(${describeCheck(check)})`)}`),
+  );
   if (newer.length > 0) {
     warn("outdated images:");
     for (const line of newer) {
@@ -412,8 +494,8 @@ async function reportStaleServices(remote: Remote) {
     }
   }
 
-  // A recorded base digest is checked directly, so age is only a guess for
-  // the rest
+  // Redeploying a pinned image gets the same image again, and a recorded base
+  // digest is checked directly, so age is only a guess for the rest
   const stale = services.filter(
     (s) => !isPinned(s) && !s.baseDigest && s.days >= STALE_IMAGE_DAYS,
   );

@@ -105,7 +105,7 @@ The second form reads the value from stdin, so it stays out of shell history. `e
 
 ```bash
 portal ls
-portal update --check
+portal outdated
 portal update
 portal update --rollback
 portal status
@@ -119,11 +119,14 @@ portal doctor
 ```
 
 - `ls` lists every service on the server, with its state, route and deployed image tag.
-  - `--outdated` adds a column for each service's image: the version a pinned `image` is on, or the base image a built image names, with a newer version if the registry has one, or `(rebuilt upstream)` if its tag now points to a different image than the one it was built from. Images with no base image label show as `unlabeled` (see [Base images](#base-images)). Like `update`, this only works for public images.
+- `outdated` lists every upgrade portal can see, without changing anything. Only public images can be checked.
+  - **Infrastructure:** for each container `update` manages, the version it's running and the version its tag points to now (marked `(rebuilt upstream)` if the tag points to a new build of the same version), and a newer version of a pinned tag, such as `caddy:2.12` for `caddy:2.11`, which only changing the pin gets. Versions are worked out from the registry's tags, falling back to the image's `org.opencontainers.image.version` label.
+  - **Services:** a newer version of the image a service is pinned to, and a newer version of the base image a built image names, or `rebuilt upstream` if its tag now points to a different image than the one it was built from (see [Base images](#base-images)).
+  - **Gaps:** services it can't fully check are listed after the table with the reason, such as an image with no base image label, or a base with no recorded digest, so a rebuild of its tag wouldn't be noticed. Redeploying with a labeled base fills most gaps (see [Base images](#base-images)).
 - `update` pulls newer images for the shared infrastructure (the root compose project, such as cloudflared and caddy) and recreates only the containers whose image changed.
   - **Checks:** before pulling, it records the response status of every route, requested through Cloudflare. After recreating, it waits for the containers to be healthy and for every route to return its earlier status again.
   - **Automatic rollback:** if a container doesn't come up, or a route's status changes, portal restores the previous images and exits with an error. Pin a version in the root `compose.yaml` to keep a bad release from being pulled again.
-  - **Checking first:** `update --check` shows the version each container is running and what's available, without changing anything. That's the version its tag points to now (marked `(rebuilt upstream)` if the tag points to a new build of the same version), and a newer version of a pinned tag, such as `caddy:2.12` for `caddy:2.11`, which only changing the pin gets. Versions are worked out from the registry's tags, falling back to the image's `org.opencontainers.image.version` label.
+  - **Checking first:** `outdated` shows what an update would pull.
   - **Later rollback:** the images an update replaced are kept as `<image>:<tag>-previous`, and `portal update --rollback` switches back to them for problems noticed after the update finished.
   - **Services aren't touched.** CI redeploys registry-built apps, and locally built services pick up base image fixes when you `portal deploy` them, so `update` lists any service that was last deployed more than 30 days ago, unless it can check the image's base digest (see [Base images](#base-images)). For services pinned to a versioned `image` (such as `ghcr.io/atuinsh/atuin:18.23.0`), it asks the registry for newer tags of the same form instead and lists any it finds, since redeploying a pinned image gets the same image again. It never changes the pin. This check needs the service to have been deployed by a portal version that records its image, and it only works for public images. Built images are checked the same way against the base image they name, and against the digest that base had when they were built (see [Base images](#base-images)).
 - `status` shows the container, deployed image tags and route.
@@ -185,7 +188,7 @@ LABEL org.opencontainers.image.base.name=${BASE_IMAGE}
 
 The `LABEL` goes in the final stage, and that stage needs its own `ARG BASE_IMAGE` line to see the value. `portal doctor --fix` makes this change: it moves an inline base image into the `ARG`, or reuses the `ARG`s the `FROM` line already has, and corrects a label that doesn't match. `portal deploy` warns when a built image, or one deployed with `--image`, has no label. Static site images get the label automatically. Services pinned to a versioned `image` are checked by that version instead.
 
-`portal deploy` always builds with `--pull`, so a deploy uses the current image behind the base's tag rather than a copy cached on your machine. It also records that image's digest for the server's platform in the `org.opencontainers.image.base.digest` label. `portal update` and `portal ls --outdated` compare it with the digest the tag points to now, so a base on a tag that moves, such as `debian:trixie-slim` or `node:26-slim`, is reported as rebuilt upstream when there's something new to deploy. A base pinned to a digest (`image@sha256:…`) never changes, so it isn't checked. Images built elsewhere, such as in CI, only get this check if their build sets the label; `portal labels` prints it (see [CI](#ci)).
+`portal deploy` always builds with `--pull`, so a deploy uses the current image behind the base's tag rather than a copy cached on your machine. It also records that image's digest for the server's platform in the `org.opencontainers.image.base.digest` label. `portal update` and `portal outdated` compare it with the digest the tag points to now, so a base on a tag that moves, such as `debian:trixie-slim` or `node:26-slim`, is reported as rebuilt upstream when there's something new to deploy. A base pinned to a digest (`image@sha256:…`) never changes, so it isn't checked. Images built elsewhere, such as in CI, only get this check if their build sets the label; `portal labels` prints it (see [CI](#ci)).
 
 ### CI
 

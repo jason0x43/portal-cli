@@ -9,7 +9,7 @@ import {
 } from "./config.ts";
 import { servicePath } from "./compose.ts";
 import { q, Remote, type RunOptions, type RunResult } from "./remote.ts";
-import { dim } from "./ui.ts";
+import { dim, spin } from "./ui.ts";
 
 export const CADDYFILE = "/etc/caddy/Caddyfile";
 
@@ -103,8 +103,26 @@ export class DeployError extends Error {}
 export async function waitForService(
   remote: Remote,
   name: string,
-  { timeout = 60, settle = 5 }: { timeout?: number; settle?: number } = {},
+  options: { timeout?: number; settle?: number } = {},
 ): Promise<void> {
+  const state = await spin(`waiting for ${name}`, pollService(remote, name, options));
+  if (state === undefined) {
+    return;
+  }
+  console.error(dim(`--- last logs for ${name} ---`));
+  await remote.exec(`docker logs --tail 40 ${q(name)}`, {
+    inherit: true,
+    allowFail: true,
+  });
+  throw new DeployError(`${name} didn't come up (last state: ${state})`);
+}
+
+/** Poll the container until it's up, or return the last state it was in. */
+async function pollService(
+  remote: Remote,
+  name: string,
+  { timeout = 60, settle = 5 }: { timeout?: number; settle?: number },
+): Promise<string | undefined> {
   const deadline = Date.now() + timeout * 1000;
   let firstRestartCount: number | undefined;
   let runningSince: number | undefined;
@@ -140,13 +158,7 @@ export async function waitForService(
     }
     await Bun.sleep(1000);
   }
-
-  console.error(dim(`--- last logs for ${name} ---`));
-  await remote.exec(`docker logs --tail 40 ${q(name)}`, {
-    inherit: true,
-    allowFail: true,
-  });
-  throw new DeployError(`${name} didn't come up (last state: ${state})`);
+  return state;
 }
 
 /**

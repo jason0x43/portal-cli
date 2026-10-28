@@ -1,7 +1,6 @@
 import { imageRepo, renderDisabledSite, servicePath } from "../compose.ts";
 import { formatValue, isValidKey, parseEnv, setVars, unsetVars } from "../dotenv.ts";
 import { DEPLOY_TAG_RE } from "../image.ts";
-import { checkVersions, outdatedSummary, serviceImages } from "../outdated.ts";
 import { CommandError, q, type Remote } from "../remote.ts";
 import {
   DeployError,
@@ -332,11 +331,9 @@ interface ServiceSummary {
 }
 
 /**
- * Every service on the server, with its state, deployed tag, and route. With
- * `outdated`, also whether its pinned image or base image has a newer version,
- * or its image has no base image label to check.
+ * Every service on the server, with its state, deployed tag, and route.
  */
-export async function list(remote: Remote, { outdated = false } = {}) {
+export async function list(remote: Remote) {
   const result = await remote.exec(
     [
       "for f in services/*/compose.yaml; do",
@@ -387,22 +384,5 @@ export async function list(remote: Remote, { outdated = false } = {}) {
     s.route ?? "-",
     s.tag ?? "-",
   ]);
-  const header = ["SERVICE", "STATE", "ROUTE", "IMAGE"];
-  if (outdated) {
-    const images = await serviceImages(remote);
-    const checks = await checkVersions(images);
-    const byName = new Map(images.map((i) => [i.name, i]));
-    for (const row of rows) {
-      const image = byName.get(row[0]!);
-      row.push(image ? outdatedSummary(image, checks.get(image.name) ?? []) : "-");
-    }
-    header.push("BASE");
-    const failed = new Map(
-      [...checks.values()].flat().flatMap((c) => (c.error ? [[c.ref, c.error]] : [])),
-    );
-    for (const [ref, error] of failed) {
-      warn(`couldn't check ${ref} for newer versions: ${error}`);
-    }
-  }
-  printTable(header, rows);
+  printTable(["SERVICE", "STATE", "ROUTE", "IMAGE"], rows);
 }

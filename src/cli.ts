@@ -4,7 +4,7 @@ import { deploy } from "./commands/deploy.ts";
 import { doctor } from "./commands/doctor.ts";
 import { init } from "./commands/init.ts";
 import { labels } from "./commands/labels.ts";
-import { checkUpdates, rollbackUpdate, update } from "./commands/update.ts";
+import { outdated, rollbackUpdate, update } from "./commands/update.ts";
 import {
   disable,
   enable,
@@ -104,19 +104,19 @@ program
   .command("ls")
   .alias("list")
   .description("List every service on the server")
-  .option("--outdated", "check pinned and base images for newer versions")
-  .action(async (opts, cmd) => list(await serverRemote(cmd.optsWithGlobals()), opts));
+  .action(async (_opts, cmd) => list(await serverRemote(cmd.optsWithGlobals())));
+
+program
+  .command("outdated")
+  .description("List newer versions of the infrastructure and service images, without updating")
+  .action(async (_opts, cmd) => outdated(await serverRemote(cmd.optsWithGlobals())));
 
 program
   .command("update")
   .description("Update the shared infrastructure (cloudflared, caddy)")
   .option("--rollback", "switch back to the images the last update replaced")
-  .option("--check", "show the running versions and newer ones, without updating")
   .action(async (opts, cmd) => {
     const remote = await serverRemote(cmd.optsWithGlobals());
-    if (opts.check) {
-      return checkUpdates(remote);
-    }
     return opts.rollback ? rollbackUpdate(remote) : update(remote);
   });
 

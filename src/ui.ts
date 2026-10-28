@@ -10,17 +10,67 @@ export const green = paint("32");
 export const yellow = paint("33");
 export const cyan = paint("36");
 
+/** Whether a spinner is drawn on the current stderr line. */
+let spinning = false;
+
+/** Clear a spinner's line so a message can be printed in its place. */
+function clearSpinner() {
+  if (spinning) {
+    process.stderr.write("\r\x1b[2K");
+  }
+}
+
 /** Progress goes to stderr so command output on stdout stays clean. */
 export function step(message: string) {
+  clearSpinner();
   console.error(`${cyan("→")} ${message}`);
 }
 
 export function done(message: string) {
+  clearSpinner();
   console.error(`${green("✓")} ${message}`);
 }
 
 export function warn(message: string) {
+  clearSpinner();
   console.error(`${yellow("!")} ${message}`);
+}
+
+const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+/**
+ * Show `message` with a spinner on stderr while `work` runs, if stderr is a
+ * terminal. Messages printed meanwhile appear above it. With `persist`, the
+ * message is left behind as a step, as it's always printed when stderr isn't
+ * a terminal.
+ */
+export async function spin<T>(
+  message: string,
+  work: Promise<T>,
+  { persist = false } = {},
+): Promise<T> {
+  if (!process.stderr.isTTY || spinning) {
+    if (persist) {
+      step(message);
+    }
+    return work;
+  }
+  let frame = 0;
+  const draw = () =>
+    process.stderr.write(`\r\x1b[2K${cyan(SPINNER_FRAMES[frame++ % SPINNER_FRAMES.length]!)} ${message}`);
+  spinning = true;
+  draw();
+  const timer = setInterval(draw, 80);
+  try {
+    return await work;
+  } finally {
+    clearInterval(timer);
+    clearSpinner();
+    spinning = false;
+    if (persist) {
+      step(message);
+    }
+  }
 }
 
 export function confirm(question: string): boolean {

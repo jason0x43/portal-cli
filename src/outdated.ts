@@ -162,25 +162,50 @@ export function describeCheck({ kind, ref, newer, rebuilt }: VersionCheck): stri
   return rebuilt ? `${current} (rebuilt upstream)` : current;
 }
 
-/** What `portal ls --outdated` shows for a service's image. */
-export function outdatedSummary(image: ServiceImage, checks: VersionCheck[]): string {
-  if (checks.length > 0) {
-    // Pinned services also check the base their image names, but only an
-    // outdated one is worth showing: the pin is what gets changed
-    const shown = isPinned(image)
-      ? checks.filter((c) => c.kind === "pin" || isOutdated(c))
-      : checks;
-    return shown
-      .map((c) => (c.error ? `${describeCheck(c)} (couldn't check)` : describeCheck(c)))
-      .join(", ");
+/**
+ * A `portal outdated` row for each upgrade a service's checks found: the
+ * service, the image (marked if it's the base the service was built from),
+ * the version it's on, and what's available.
+ */
+export function upgradeRows(name: string, checks: VersionCheck[]): string[][] {
+  return checks
+    .filter((c) => !c.error && isOutdated(c))
+    .map(({ kind, ref, newer, rebuilt }) => [
+      name,
+      kind === "base" ? `${ref} (base)` : ref,
+      refTag(ref) ?? "latest",
+      [
+        ...(rebuilt ? ["rebuilt upstream"] : []),
+        ...(newer ? [kind === "pin" ? `${newer} (change the pin)` : newer] : []),
+      ].join(", "),
+    ]);
+}
+
+/**
+ * Why `portal outdated` can't tell when a service has an upgrade, if it
+ * can't. A pinned image is checked by its pin, so its base doesn't matter.
+ */
+export function uncheckedReason(
+  image: ServiceImage,
+  checks: VersionCheck[],
+): string | undefined {
+  if (checks.length > 0 && checks.every((c) => c.error)) {
+    return "couldn't ask the registry";
   }
-  if (image.base) {
-    return `${image.base} (no version or digest)`;
+  if (isPinned(image) || (Number.isNaN(image.days) && !image.source)) {
+    return;
   }
-  if (image.source || !Number.isNaN(image.days)) {
-    return "unlabeled";
+  const { base, baseDigest } = image;
+  if (!base) {
+    return "its image has no base image label";
   }
-  return "-";
+  // A base pinned to a digest never changes
+  if (baseDigest || base.includes("@")) {
+    return;
+  }
+  return isVersioned(base)
+    ? `no digest recorded for ${base}, so rebuilds of it aren't noticed`
+    : `${base} has no version, and no digest is recorded for it`;
 }
 
 export interface BaseDigestLabels {
@@ -193,7 +218,7 @@ export interface BaseDigestLabels {
 
 /**
  * A label with the digest of the image a build of the service starts from,
- * so `portal update` and `portal ls --outdated` can tell when its tag is
+ * so `portal update` and `portal outdated` can tell when its tag is
  * rebuilt. Only a base the image names in its base.name label is looked up.
  */
 export async function baseDigestLabels(config: Config): Promise<BaseDigestLabels> {

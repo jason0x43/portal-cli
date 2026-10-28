@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeCheck, outdatedSummary, versionChecks } from "../src/outdated.ts";
+import { describeCheck, uncheckedReason, upgradeRows, versionChecks } from "../src/outdated.ts";
 
 describe("versionChecks", () => {
   test("checks a versioned pin and a versioned base", () => {
@@ -57,45 +57,59 @@ describe("describeCheck", () => {
   });
 });
 
-describe("outdatedSummary", () => {
-  const built = { name: "worthy", days: 3, base: "node:26.1.0-slim" };
+describe("upgradeRows", () => {
+  test("lists only checks that found something", () => {
+    expect(
+      upgradeRows("worthy", [
+        { kind: "base", ref: "node:26.1.0-slim", newer: "26.12.1-slim" },
+        { kind: "base", ref: "debian:trixie-slim", digest: "sha256:aaa", rebuilt: false },
+        { kind: "base", ref: "alpine:3.20", error: "401" },
+      ]),
+    ).toEqual([["worthy", "node:26.1.0-slim (base)", "26.1.0-slim", "26.12.1-slim"]]);
+  });
 
-  test("shows the base image, with a newer version if there is one", () => {
-    expect(outdatedSummary(built, [{ kind: "base", ref: built.base }])).toBe(
-      "node 26.1.0-slim",
+  test("notes a rebuilt base and a pin that needs changing", () => {
+    expect(
+      upgradeRows("atuin", [
+        { kind: "pin", ref: "ghcr.io/atuinsh/atuin:18.23.0", newer: "18.24.0" },
+        { kind: "base", ref: "debian:trixie-slim", digest: "sha256:aaa", rebuilt: true },
+      ]),
+    ).toEqual([
+      ["atuin", "ghcr.io/atuinsh/atuin:18.23.0", "18.23.0", "18.24.0 (change the pin)"],
+      ["atuin", "debian:trixie-slim (base)", "trixie-slim", "rebuilt upstream"],
+    ]);
+  });
+});
+
+describe("uncheckedReason", () => {
+  test("accepts pins and bases with a version or recorded digest", () => {
+    const pin = { kind: "pin" as const, ref: "ghcr.io/atuinsh/atuin:18.23.0" };
+    expect(uncheckedReason({ name: "atuin", days: 3, source: pin.ref }, [pin])).toBeUndefined();
+    expect(
+      uncheckedReason({ name: "app", days: 3, base: "debian:trixie-slim", baseDigest: "sha256:aaa" }, [
+        { kind: "base", ref: "debian:trixie-slim", digest: "sha256:aaa" },
+      ]),
+    ).toBeUndefined();
+    expect(uncheckedReason({ name: "app", days: 3, base: "node@sha256:aaa" }, [])).toBeUndefined();
+    expect(uncheckedReason({ name: "gone", days: NaN }, [])).toBeUndefined();
+  });
+
+  test("explains what's missing", () => {
+    expect(uncheckedReason({ name: "notes", days: 40 }, [])).toBe(
+      "its image has no base image label",
+    );
+    expect(uncheckedReason({ name: "app", days: 3, source: "ghcr.io/me/app" }, [])).toBe(
+      "its image has no base image label",
+    );
+    expect(uncheckedReason({ name: "app", days: 3, base: "node:lts" }, [])).toBe(
+      "node:lts has no version, and no digest is recorded for it",
+    );
+    const base = { kind: "base" as const, ref: "node:26.1.0-slim" };
+    expect(uncheckedReason({ name: "app", days: 3, base: base.ref }, [base])).toBe(
+      "no digest recorded for node:26.1.0-slim, so rebuilds of it aren't noticed",
     );
     expect(
-      outdatedSummary(built, [{ kind: "base", ref: built.base, newer: "26.12.1-slim" }]),
-    ).toBe("node 26.1.0-slim → 26.12.1-slim");
-    expect(outdatedSummary(built, [{ kind: "base", ref: built.base, error: "401" }])).toBe(
-      "node 26.1.0-slim (couldn't check)",
-    );
-  });
-
-  test("shows a pinned image's base only when it's outdated", () => {
-    const pinned = { name: "atuin", days: 3, source: "ghcr.io/atuinsh/atuin:18.23.0" };
-    const pin = { kind: "pin" as const, ref: pinned.source };
-    const base = { kind: "base" as const, ref: "debian:12.8-slim" };
-    expect(outdatedSummary(pinned, [pin, base])).toBe("pinned 18.23.0");
-    expect(outdatedSummary(pinned, [pin, { ...base, newer: "12.9-slim" }])).toBe(
-      "pinned 18.23.0, debian 12.8-slim → 12.9-slim",
-    );
-    expect(outdatedSummary(pinned, [pin, { ...base, rebuilt: true }])).toBe(
-      "pinned 18.23.0, debian 12.8-slim (rebuilt upstream)",
-    );
-  });
-
-  test("flags images without a base image label", () => {
-    expect(outdatedSummary({ name: "notes", days: 40 }, [])).toBe("unlabeled");
-    expect(outdatedSummary({ name: "app", days: 3, source: "ghcr.io/me/app:latest" }, [])).toBe(
-      "unlabeled",
-    );
-    expect(outdatedSummary({ name: "app", days: 3, base: "node:lts" }, [])).toBe(
-      "node:lts (no version or digest)",
-    );
-  });
-
-  test("shows nothing for a service with no image", () => {
-    expect(outdatedSummary({ name: "gone", days: NaN }, [])).toBe("-");
+      uncheckedReason({ name: "app", days: 3, base: base.ref }, [{ ...base, error: "401" }]),
+    ).toBe("couldn't ask the registry");
   });
 });
