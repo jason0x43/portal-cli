@@ -104,7 +104,13 @@ export function deepMerge(
   return out;
 }
 
-export const STATIC_SERVER_IMAGE = "joseluisq/static-web-server:2.44.1";
+/**
+ * The static-web-server image static sites are built from. It's the major
+ * version's tag, so a deploy picks up the latest 2.x release and `portal
+ * outdated` reports the tag as rebuilt upstream when a new one is out. A
+ * new major version is offered as a newer version, to adopt here.
+ */
+export const STATIC_SERVER_IMAGE = "joseluisq/static-web-server:2";
 
 /**
  * Dockerfile for a static site: the content baked into a static-web-server
