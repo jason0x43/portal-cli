@@ -25,6 +25,8 @@ export interface ServiceImage {
   base?: string;
   /** The digest of that image when it was built, from the base.digest label */
   baseDigest?: string;
+  /** Whether the service is disabled */
+  disabled?: boolean;
 }
 
 /** Every service on the server and what its labels say about its image. */
@@ -36,7 +38,7 @@ export async function serviceImages(remote: Remote): Promise<ServiceImage[]> {
       '  n=${f#services/}; n=${n%/compose.yaml}',
       `  id=$(docker image inspect --format '{{.Id}}' "portal/$n:latest" 2>/dev/null)`,
       `  tags=$(docker image ls --no-trunc "portal/$n" --format '{{.ID}} {{.Tag}}' | grep "^$id " | cut -d' ' -f2 | tr '\\n' ' ')`,
-      `  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$tags" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)" "$(docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}\t{{index .Config.Labels "${BASE_DIGEST_LABEL}"}}' "portal/$n:latest" 2>/dev/null)"`,
+      `  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$n" "$(docker image inspect --format '{{.Created}}' "portal/$n:latest" 2>/dev/null)" "$tags" "$(docker inspect --format '{{index .Config.Labels "${IMAGE_LABEL}"}}' "$n" 2>/dev/null)" "$([ -e "services/$n/disabled" ] && echo disabled)" "$(docker image inspect --format '{{index .Config.Labels "${BASE_IMAGE_LABEL}"}}\t{{index .Config.Labels "${BASE_DIGEST_LABEL}"}}' "portal/$n:latest" 2>/dev/null)"`,
       "done; true",
     ].join("\n"),
   );
@@ -46,8 +48,15 @@ export async function serviceImages(remote: Remote): Promise<ServiceImage[]> {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [name = "", created = "", tags = "", source = "", base = "", baseDigest = ""] =
-        line.split("\t");
+      const [
+        name = "",
+        created = "",
+        tags = "",
+        source = "",
+        disabled = "",
+        base = "",
+        baseDigest = "",
+      ] = line.split("\t");
       const newest = tags
         .split(" ")
         .filter((tag) => DEPLOY_TAG_RE.test(tag))
@@ -63,6 +72,7 @@ export async function serviceImages(remote: Remote): Promise<ServiceImage[]> {
         source: source || undefined,
         base: base || undefined,
         baseDigest: baseDigest || undefined,
+        ...(disabled === "disabled" ? { disabled: true } : {}),
       };
     });
 }

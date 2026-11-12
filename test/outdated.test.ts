@@ -1,5 +1,37 @@
 import { describe, expect, test } from "bun:test";
-import { describeCheck, uncheckedReason, upgradeRows, versionChecks } from "../src/outdated.ts";
+import {
+  describeCheck,
+  serviceImages,
+  uncheckedReason,
+  upgradeRows,
+  versionChecks,
+} from "../src/outdated.ts";
+import type { Remote } from "../src/remote.ts";
+
+describe("serviceImages", () => {
+  const remoteWith = (stdout: string) =>
+    ({ exec: async () => ({ stdout, stderr: "", code: 0 }) }) as unknown as Remote;
+
+  test("reads each service's labels and whether it's disabled", async () => {
+    const images = await serviceImages(
+      remoteWith(
+        [
+          ["site", "2026-11-01T00:00:00.000000000Z", "", "", "", "joseluisq/static-web-server:2", "sha256:aaa"],
+          ["old", "2026-11-01T00:00:00.000000000Z", "", "", "disabled", "node:26-slim", "sha256:bbb"],
+          // No image, so its base labels are a single empty field
+          ["gone", "", "", "", "disabled", ""],
+        ]
+          .map((fields) => fields.join("\t"))
+          .join("\n"),
+      ),
+    );
+    expect(images.map(({ days: _, ...image }) => image)).toEqual([
+      { name: "site", base: "joseluisq/static-web-server:2", baseDigest: "sha256:aaa" },
+      { name: "old", base: "node:26-slim", baseDigest: "sha256:bbb", disabled: true },
+      { name: "gone", disabled: true },
+    ]);
+  });
+});
 
 describe("versionChecks", () => {
   test("checks a versioned pin and a versioned base", () => {

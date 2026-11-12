@@ -458,9 +458,13 @@ export async function rollbackUpdate(remote: Remote) {
   );
 }
 
-/** Every service's image, and what registries say about the images it uses. */
+/**
+ * Every enabled service's image, and what registries say about the images it
+ * uses. Disabled services aren't running, so their images don't matter until
+ * they're enabled.
+ */
 async function checkServices(remote: Remote) {
-  const services = await serviceImages(remote);
+  const services = (await serviceImages(remote)).filter((s) => !s.disabled);
   return [services, await checkVersions(services)] as const;
 }
 
