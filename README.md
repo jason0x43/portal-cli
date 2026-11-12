@@ -197,7 +197,7 @@ This repo is also a GitHub Action. A workflow builds and pushes its image as usu
 ```yaml
 - uses: actions/checkout@v7 # the action reads portal.toml from the repo
 # ... build and push ghcr.io/owner/app:sha-<commit> ...
-- uses: jason0x43/portal-cli@v0.7.0
+- uses: jason0x43/portal-cli@v0.8.0
   with:
     config: portal.toml
     image: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
@@ -219,7 +219,7 @@ To record the base image's digest the way `portal deploy` does (see [Base images
 
 ```yaml
 - id: portal
-  uses: jason0x43/portal-cli/labels@v0.7.0
+  uses: jason0x43/portal-cli/labels@v0.8.0
   with:
     config: portal.toml
 - uses: docker/build-push-action@v7
